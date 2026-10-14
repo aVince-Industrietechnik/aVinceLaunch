@@ -6,6 +6,8 @@
 # Test sucht in jeder versionierten Datei nach Spuren, die nicht hinaus
 # gehoeren: Pfade und Ordner der privaten Ablage, persoenliche Gruppennamen,
 # feste Pfade eines Benutzers, Hinweise auf ein privates Repository.
+# Seit E2 (14.10.2026, neues oeffentliches Repository mit sauberem Anfang)
+# gelten dieselben Muster auch fuer alle Commit-Texte.
 # Nichts wird geschrieben.
 # Aufruf im Repository-Wurzelverzeichnis:  python3 tests/v1-oeffentlich-test.py
 
@@ -81,6 +83,26 @@ for pfad in sorted(dateien()):
                 funde.append(f"{pfad}:{nr} [{name}] {zeile.strip()[:90]}")
 
 check(f"{geprueft} Textdateien ohne interne Spuren", funde, [])
+# E2: Commit-Texte (Betreff und Text) - sie werden mit dem Repository
+# oeffentlich. Ohne git (z. B. entpacktes Archiv) wird nur gemeldet.
+try:
+    log = subprocess.run(["git", "log", "--all", "--format=%h%x00%B%x1e"],
+                         capture_output=True, check=True).stdout.decode("utf-8", "replace")
+except Exception:
+    log = None
+if log is None:
+    print("  info    kein git-Verlauf - Commit-Texte nicht geprueft")
+else:
+    commit_funde = []
+    eintraege = [e.strip("\n") for e in log.split("\x1e") if e.strip()]
+    for eintrag in eintraege:
+        kennung, _, text = eintrag.partition("\0")
+        for name, muster in VERBOTEN:
+            for zeile in text.splitlines():
+                if muster.search(zeile):
+                    commit_funde.append(f"{kennung} [{name}] {zeile.strip()[:90]}")
+    check(f"{len(eintraege)} Commit-Texte ohne interne Spuren", commit_funde, [])
+
 check("Ausnahmen zeigen auf vorhandene Dateien", [p for p in AUSNAHMEN if not os.path.isfile(p)], [])
 check("Selbstpruefung: Muster greifen",
       [name for name, m in VERBOTEN if not m.search({

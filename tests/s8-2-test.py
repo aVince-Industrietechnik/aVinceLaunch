@@ -65,17 +65,15 @@ check("Fence: Rueckfall aVinceLaunch statt THELAUNCHER",
 print("B7 Regeln:")
 mode, rules, notes = R.load_rules()
 check("ohne rules.json: keine Regeln", (mode, rules), ("suggest", []))
-# Teil 2 (T12): Vergleich mit dem Stand vor S8-2 (acb41c4 = erste Pruefung);
-# "main~0" war nach dem Merge schon der neue Stand - der Vergleich entfiel immer.
-old_source = subprocess.run(["git", "show", "acb41c4:scripts/avincelaunch_rules.py"],
-                            capture_output=True, text=True).stdout
-check("Vergleichsstand acb41c4 lesbar", bool(old_source), True)
-old_rules = None
-for node in ast.parse(old_source).body:
-    if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "DEFAULT_RULES":
-        old_rules = ast.literal_eval(node.value)
+# Teil 2 (T12) verglich mit dem Stand vor S8-2 (eingebaute Regeln mit
+# persoenlichen Zielen). Seit E2 (14.10.2026) beginnt das oeffentliche
+# Repository ohne diesen Verlauf - geprueft wird darum direkt: keine
+# eingebaute Regelliste mehr (DEFAULT_RULES leer).
+rules_tree = ast.parse(open("scripts/avincelaunch_rules.py", encoding="utf-8").read())
+check("eingebaute Regelliste (DEFAULT_RULES) leer",
+      [ast.literal_eval(n.value) for n in rules_tree.body if isinstance(n, ast.Assign)
+       and getattr(n.targets[0], "id", "") == "DEFAULT_RULES"], [[]])
 example = json.load(open("scripts/rules.example.json", encoding="utf-8"))
-check("acb41c4 hatte eingebaute Regeln", bool(old_rules), True)
 # Schritt 4, V3b (K2-3): Das Beispiel folgt jetzt der Startaufstellung (en/de,
 # tests/v3b-test.py) - keines der alten persoenlichen Ziele mehr.
 # Persoenlich waren die Sammelordner VM_JTL und INTERNET_KOMMUNIKATION;
@@ -84,7 +82,6 @@ check("acb41c4 hatte eingebaute Regeln", bool(old_rules), True)
 check("Beispiel ohne die alten persoenlichen Ziele (K2-3)",
       sorted({t.casefold() for r in example["rules"] for t in R.rule_targets(r)}
              & {"vm_jtl", "internet_kommunikation"}), [])
-check("Beispiel nicht mehr = alte eingebaute Regeln", example["rules"] != old_rules, True)
 check("alle Beispielregeln gueltig", all(R._valid_rule(r) for r in example["rules"]), True)
 check("example_rules liest das Beispiel", R.example_rules(), example["rules"])
 check("--write-rules legt an", R.write_default_rules(), True)

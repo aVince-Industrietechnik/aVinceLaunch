@@ -4,7 +4,7 @@
 
 # Prueft Schritt 9, Paket A8-1 (Pruefung Phase 2) ohne Cinnamon, nur lesend:
 #   B3  jede Quelldatei hat genau einen SPDX-Kopf (nach dem Shebang); die aus
-#       TheLauncher 1.0.3 (Commit 3845912) uebernommenen tragen
+#       TheLauncher 1.0.3 uebernommenen (Liste UPSTREAM) tragen
 #       "GPL-3.0-only AND MIT" + "Portions copyright (c) MHK924", die eigenen
 #       "GPL-3.0-only" ohne;
 #   P43 keine Protokollmeldung "TheLauncher:" mehr, Autostart-Texte ohne den
@@ -50,7 +50,19 @@ if not os.path.exists("tests/a8-1-test.py") or "tests/a8-1-test.py" not in track
     # Vor dem ersten Commit zaehlt die Datei trotzdem mit.
     tracked.append("tests/a8-1-test.py")
 sources = sorted(f for f in tracked if SOURCE.match(f) and not NOT_SOURCE.search(f))
-upstream = set(git("ls-tree", "-r", "--name-only", "3845912").split())
+# Aus TheLauncher 1.0.3 uebernommene Quelldateien. Bis E2 (14.10.2026) las der
+# Test sie aus dem Import-Commit des Verlaufs; das oeffentliche Repository
+# beginnt mit einem sauberen Anfangscommit, darum hier fest.
+upstream = {
+    "Desklet/BackHomeButton.py", "Desklet/BaseDirectoryChooser.py", "Desklet/ItemsActionBar.py",
+    "Desklet/OrderFolderHeader.py", "Desklet/OrderListWidget.py", "Desklet/ScrollableCollapsiblePage.py",
+    "Desklet/SubdirectoryChooser.py", "Desklet/about-dialog.py", "Desklet/desklet.js", "Desklet/iconPicker.py",
+    "Desklet/itemsBarButtons.py", "Desklet/lib/config.js", "Desklet/lib/fileMonitor.js", "Desklet/lib/launcher.js",
+    "Desklet/lib/linkScanner.js", "Desklet/lib/placement.js", "Desklet/lib/settingsDefaults.js",
+    "Desklet/lib/sidecar.js", "Desklet/lib/themePresets.js", "Desklet/linkImport.py",
+    "Desklet/orderFolderEditor.py", "Desklet/orderListPending.py", "Desklet/settingsPageBuilder.py",
+    "Desklet/stylesheet.css",
+}
 
 # --- B3 ---------------------------------------------------------------------
 print("B3 SPDX-Koepfe:")
@@ -84,7 +96,7 @@ for path in sources:
         bad_shebang.append(path)
 check("genau ein SPDX-Kopf je Datei", bad_count, [])
 check("Kopf am Anfang bzw. direkt nach dem Shebang", bad_place, [])
-check("Ausdruck passt zur Herkunft (3845912)", bad_expr, [])
+check("Ausdruck passt zur Herkunft (TheLauncher 1.0.3)", bad_expr, [])
 check("Copyright-Zeilen passen zur Herkunft", bad_portions, [])
 check("Shebang unveraendert in Zeile 1", bad_shebang, [])
 with open("Desklet/about-dialog.py", encoding="utf-8") as handle:
