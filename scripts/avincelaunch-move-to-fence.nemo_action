@@ -1,0 +1,29 @@
+[Nemo Action]
+
+# AP18-2 - Rechtsklick auf ein Programmsymbol auf dem Schreibtisch:
+# "In einen Fence verschieben ...". Nur auf dem Schreibtisch
+# (Conditions=desktop). Nemo erkennt Symbole auf dem Schreibtisch weder
+# per Extensions=desktop noch per Mimetypes=application/x-desktop (Probe
+# 06.10.: beide verborgen) - darum alle Dateien; launcher-move nimmt nur
+# .desktop-Dateien an und sagt bei anderen freundlich ab.
+# Ablage: ~/.local/share/nemo/actions/  -  braucht launcher-move und
+# avincelaunch_rules.py in ~/.local/bin. Der Installer schreibt Exec= und
+# Dependencies= mit dem vollen Pfad (N23: ~/.local/bin steht bei einem neuen
+# Nutzer erst nach der naechsten Anmeldung im PATH).
+
+Name=Move to a fence…
+Name[de]=In einen Fence verschieben …
+Comment=Move this launcher into an aVinceLaunch fence
+Comment[de]=Dieses Programmsymbol in einen aVinceLaunch-Fence verschieben
+
+Exec=launcher-move %F
+
+Icon-Name=go-next-symbolic
+
+Selection=notnone
+
+Extensions=any;
+
+Dependencies=launcher-move;zenity;
+
+Conditions=desktop;

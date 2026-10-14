@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+"""avincelaunch-helfer - installs and removes the aVinceLaunch helper package.
+
+Schritt 4, V3c (P21, E5). Everything goes to the user's own folders - never
+root, never system files:
+
+    ~/.local/bin/                     the helper scripts
+    $XDG_DATA_HOME/nemo/actions/      "Move to a fence..." for the desktop
+    $XDG_DATA_HOME/locale/de/...      German translation
+    $XDG_CONFIG_HOME/autostart/       watcher (and, if chosen, double-click)
+    $XDG_DATA_HOME/avincelaunch-helfer/
+        installiert.json              what this tool installed
+        sicherung-<time>/             files it replaced (nothing is lost)
+        avincelaunch-helfer, uninstall.sh   to remove it again later
+
+Usage:
+    install.sh   [--check] [--yes] [--doubleclick | --no-doubleclick]
+                 [--shortcut | --no-shortcut]
+    uninstall.sh [--check] [--restore]
+
+--check only shows what would happen. --restore puts back the files that the
+installation had replaced (e.g. an older version). Your data stays: rules,
+watcher state, fences and their folders.
+"""
+
+import datetime
+import gettext
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+VERSION = "0.1.0"
+DOMAIN = "avincelaunch-helfer"
+HERE = Path(__file__).resolve().parent
+
+HOME = Path.home()
+BIN = HOME / ".local/bin"
+DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
+NEMO = DATA / "nemo/actions"
+LOCALE = DATA / "locale/de/LC_MESSAGES"
+AUTOSTART = CONFIG / "autostart"
+OWN = DATA / "avincelaunch-helfer"
+MANIFEST = OWN / "installiert.json"
+DESKLET_ICON = DATA / "cinnamon/desklets/avincelaunch-desklet@avince/icon.png"
+
+SCRIPTS = ["launcher-watch", "launcher-add", "launcher-move", "desktop-clean-toggle",
+           "desktop-clean-shortcut", "desktop-doubleclick"]
+MODULES = ["avincelaunch_rules.py", "rules.example.json"]
+WATCHER = "avincelaunch-watcher.desktop"
+DOUBLECLICK = "avincelaunch-doubleclick.desktop"
+# Autostart entries of the helpers before V3 (replaced, backed up).
+OLD_AUTOSTART = {"thelauncher-watcher.desktop": "launcher-watch",
+                 "desktop-doubleclick.desktop": "desktop-doubleclick"}
+
+
+def _translation():
+    for folder in (HERE / "locale", DATA / "locale", HOME / ".local/share/locale"):
+        if gettext.find(DOMAIN, str(folder)):
+            return gettext.translation(DOMAIN, str(folder))
+    return gettext.NullTranslations()
+
+
+_ = _translation().gettext
+
+
+def say(text=""):
+    print(text, flush=True)
+
+
+def ask(question, default, assume_yes):
+    """Yes/no question in the terminal; --yes takes the default."""
+    if assume_yes or not sys.stdin.isatty():
+        return default
+    hint = _("[Y/n]") if default else _("[y/N]")
+    answer = input("%s %s " % (question, hint)).strip().lower()
+    if not answer:
+        return default
+    return answer in ("y", "yes", "j", "ja")
+
+
+# --- package contents -----------------------------------------------------------
+
+def package_dirs():
+    """Where the files of this package are: the release archive (bin/, nemo/,
+    autostart/, locale/) or, for tests, the repository folder scripts/."""
+    if (HERE / "bin").is_dir():
+        return {"bin": HERE / "bin", "nemo": HERE / "nemo", "autostart": HERE / "autostart",
+                "locale": HERE / "locale/de/LC_MESSAGES"}
+    return {"bin": HERE, "nemo": HERE, "autostart": HERE, "locale": HERE / "locale/de/LC_MESSAGES"}
+
+
+def desktop_exec(path):
+    """Exec= value with the path quoted as the desktop entry spec wants."""
+    text = str(path)
+    for char in ("\\", '"', "`", "$"):
+        text = text.replace(char, "\\" + char)
+    return '"%s"' % text
+
+
+def nemo_action_text(source):
+    """The Nemo action with the full path of launcher-move (N23, tower
+    14.10.2026): Linux Mint puts ~/.local/bin on PATH only if it existed at
+    login, so for a new user Nemo hid the action until the next login."""
+    lines = []
+    for line in source.read_text(encoding="utf-8").splitlines():
+        if line.startswith("Exec="):
+            line = "Exec=%s %%F" % desktop_exec(BIN / "launcher-move")
+        elif line.startswith("Dependencies="):
+            line = "Dependencies=%s;zenity;" % (BIN / "launcher-move")
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def plan(doubleclick):
+    """[(source or None, target, mode, text or None)] for an installation."""
+    src = package_dirs()
+    items = [(src["bin"] / name, BIN / name, 0o755, None) for name in SCRIPTS]
+    items += [(src["bin"] / name, BIN / name, 0o644, None) for name in MODULES]
+    items.append((None, NEMO / "avincelaunch-move-to-fence.nemo_action", 0o644,
+                  nemo_action_text(src["nemo"] / "avincelaunch-move-to-fence.nemo_action")))
+    mo = src["locale"] / (DOMAIN + ".mo")
+    if mo.exists():
+        items.append((mo, LOCALE / (DOMAIN + ".mo"), 0o644, None))
+    entries = [(WATCHER, "launcher-watch")]
+    if doubleclick:
+        entries.append((DOUBLECLICK, "desktop-doubleclick"))
+    for entry, script in entries:
+        template = (src["autostart"] / (entry + ".in")).read_text(encoding="utf-8")
+        text = template.replace("@EXEC@", desktop_exec(BIN / script)).replace("@ICON@", str(DESKLET_ICON))
+        items.append((None, AUTOSTART / entry, 0o644, text))
+    return items
+
+
+def old_autostart_entries():
+    """Pre-V3 autostart entries that start one of our scripts."""
+    found = []
+    for name, script in OLD_AUTOSTART.items():
+        path = AUTOSTART / name
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(line.startswith("Exec=") and script in line for line in text.splitlines()):
+            found.append(path)
+    return found
+
+
+def read_manifest():
+    try:
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and isinstance(data.get("files"), list) else None
+    except (OSError, ValueError):
+        return None
+
+
+# --- running helpers ----------------------------------------------------------------
+
+def _processes():
+    """[(pid, ppid, argv)] of this user's processes."""
+    result = []
+    uid = os.getuid()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+            argv = [a.decode("utf-8", "replace") for a in argv if a]
+            ppid = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        result.append((int(entry.name), ppid, argv))
+    return result
+
+
+def running(script):
+    """PIDs of a helper started from ~/.local/bin (python3 <path> or <path>)."""
+    target = str(BIN / script)
+    return [pid for pid, _ppid, argv in _processes()
+            if pid != os.getpid() and target in argv[:2]]
+
+
+def stop(script):
+    """Stops a running helper; for the double-click before V3 also its
+    'xinput test-xi2 --root' child (it kept running and blocked a restart)."""
+    pids = running(script)
+    children = [pid for pid, ppid, argv in _processes()
+                if ppid in pids and argv[:2] == ["xinput", "test-xi2"]]
+    for pid in children + pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for _round in range(30):
+        alive = [pid for pid in children + pids if Path("/proc/%d" % pid).exists()]
+        if not alive:
+            break
+        time.sleep(0.1)
+    return pids
+
+
+def graphical_session():
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def start(script):
+    subprocess.Popen([str(BIN / script)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+# --- checks ---------------------------------------------------------------------------
+
+def missing_tools(doubleclick):
+    """(required missing, optional missing) as texts."""
+    required = []
+    optional = []
+    if not shutil.which("zenity"):
+        required.append(_("zenity (dialogs of the watcher and of 'Move to a fence')"))
+    if not shutil.which("gsettings"):
+        required.append("gsettings")
+    if not shutil.which("gettext"):
+        optional.append(_("gettext (German messages of desktop-clean-toggle)"))
+    if not shutil.which("notify-send"):
+        optional.append(_("notify-send (short notices)"))
+    if not shutil.which("nemo"):
+        optional.append(_("nemo (the 'Move to a fence' action)"))
+    if doubleclick:
+        try:
+            import Xlib.ext.xinput  # noqa: F401
+        except ImportError:
+            required.append(_("python3-xlib (only for the double-click)"))
+    return required, optional
+
+
+# --- install ----------------------------------------------------------------------------
+
+def stamp():
+    return datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def backup(paths, folder):
+    """Copies existing files into folder/files/<absolute path>."""
+    saved = []
+    for path in paths:
+        if path.exists() or path.is_symlink():
+            target = folder / "files" / str(path).lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target, follow_symlinks=False)
+            saved.append(str(path))
+    return saved
+
+
+def write_file(target, mode, source=None, text=None):
+    """Atomically: temporary file in the same folder, then rename."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name("." + target.name + ".avl-tmp")
+    if source is not None:
+        shutil.copyfile(source, tmp)
+    else:
+        tmp.write_text(text, encoding="utf-8")
+    os.chmod(tmp, mode)
+    os.replace(tmp, target)
+
+
+def install(args):
+    check_only = "--check" in args
+    assume_yes = "--yes" in args
+    if os.geteuid() == 0:
+        say(_("Please do not run this as root - the helpers belong to your user."))
+        return 2
+    previous = read_manifest()
+    if "--doubleclick" in args:
+        doubleclick = True
+    elif "--no-doubleclick" in args:
+        doubleclick = False
+    else:
+        default = bool(previous and previous.get("doubleclick"))
+        doubleclick = ask(_("Switch on the double-click on the free desktop? "
+                            "X11 only; it listens to mouse buttons only, never to keys."),
+                          default, assume_yes or check_only)
+    if "--shortcut" in args:
+        shortcut = True
+    elif "--no-shortcut" in args:
+        shortcut = False
+    else:
+        shortcut = ask(_("Set up the shortcut Super+Shift+D (only if it is free)?"),
+                       True, assume_yes or check_only)
+
+    required, optional = missing_tools(doubleclick)
+    items = plan(doubleclick)
+    targets = [item[1] for item in items]
+    old_entries = old_autostart_entries()
+    leftovers = [Path(p) for p in (previous or {}).get("files", [])
+                 if Path(p) not in targets]
+
+    say(_("aVinceLaunch helpers %s - installation") % VERSION)
+    for target in targets:
+        state = _("replace") if target.exists() else _("new")
+        say("  %-8s %s" % (state, target))
+    for path in old_entries + leftovers:
+        say("  %-8s %s" % (_("remove"), path))
+    say("  " + _("double-click: %s") % (_("yes") if doubleclick else _("no")))
+    say("  " + _("shortcut Super+Shift+D: %s") % (_("yes") if shortcut else _("no")))
+    for text in optional:
+        say("  " + _("optional, missing: %s") % text)
+    if required:
+        for text in required:
+            say("  " + _("MISSING: %s") % text)
+        say(_("Please install the missing programs first (e.g. with the Software Manager)."))
+        return 1
+    if check_only:
+        say(_("Check only - nothing changed."))
+        return 0
+
+    folder = OWN / ("sicherung-" + stamp())
+    saved = backup(targets + old_entries + leftovers, folder)
+    was_running = {script: bool(running(script)) for script in ("launcher-watch", "desktop-doubleclick")}
+    for script in was_running:
+        stop(script)
+    for source, target, mode, text in items:
+        write_file(target, mode, source, text)
+    for path in old_entries + leftovers:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    OWN.mkdir(parents=True, exist_ok=True)
+    tool = OWN / "avincelaunch-helfer"
+    write_file(tool, 0o755, source=Path(__file__).resolve())
+    write_file(OWN / "uninstall.sh", 0o755,
+               text='#!/bin/sh\nexec python3 "$(dirname "$0")/avincelaunch-helfer" uninstall "$@"\n')
+    mo = package_dirs()["locale"] / (DOMAIN + ".mo")
+    if mo.exists():
+        (OWN / "locale/de/LC_MESSAGES").mkdir(parents=True, exist_ok=True)
+        write_file(OWN / "locale/de/LC_MESSAGES" / (DOMAIN + ".mo"), 0o644, source=mo)
+    manifest = {
+        "version": VERSION,
+        "installed": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "files": [str(t) for t in targets],
+        "backup": str(folder) if saved else None,
+        "backed_up": saved,
+        "doubleclick": doubleclick,
+        "shortcut": shortcut,
+    }
+    write_file(MANIFEST, 0o644, text=json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    if saved:
+        (folder / "liste.json").write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+
+    if graphical_session():
+        start("launcher-watch")
+        if doubleclick and os.environ.get("XDG_SESSION_TYPE", "x11") == "x11":
+            start("desktop-doubleclick")
+    if shortcut:
+        subprocess.run([str(BIN / "desktop-clean-shortcut"), "--yes"])
+
+    say(_("Installed."))
+    if saved:
+        say(_("Replaced files are kept in %s") % folder)
+    say(_("Remove again with: %s") % (OWN / "uninstall.sh"))
+    return 0
+
+
+# --- uninstall -------------------------------------------------------------------------
+
+def uninstall(args):
+    check_only = "--check" in args
+    restore = "--restore" in args
+    manifest = read_manifest()
+    if manifest is None:
+        say(_("The aVinceLaunch helpers are not installed (no %s).") % MANIFEST)
+        return 1
+    files = [Path(p) for p in manifest["files"]]
+    say(_("aVinceLaunch helpers %s - removal") % manifest.get("version", "?"))
+    for path in files:
+        say("  %-8s %s" % (_("remove"), path))
+    backup_dir = manifest.get("backup")
+    if restore and backup_dir:
+        for path in manifest.get("backed_up", []):
+            say("  %-8s %s" % (_("restore"), path))
+    say("  " + _("kept: your rules, the watcher state, the fences and their folders"))
+    if check_only:
+        say(_("Check only - nothing changed."))
+        return 0
+
+    # Never leave the fences hidden without a way back.
+    if (STATE / "avincelaunch/schreibtisch-frei").exists() and (BIN / "desktop-clean-toggle").exists():
+        subprocess.run([str(BIN / "desktop-clean-toggle"), "--show"], stdout=subprocess.DEVNULL)
+    if (BIN / "desktop-clean-shortcut").exists():
+        subprocess.run([str(BIN / "desktop-clean-shortcut"), "--remove"], stdout=subprocess.DEVNULL)
+    for script in ("launcher-watch", "desktop-doubleclick"):
+        stop(script)
+    for path in files:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    if restore and backup_dir:
+        for name in manifest.get("backed_up", []):
+            source = Path(backup_dir) / "files" / name.lstrip("/")
+            if source.exists() or source.is_symlink():
+                target = Path(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target, follow_symlinks=False)
+    for path in (MANIFEST, OWN / "uninstall.sh", OWN / "avincelaunch-helfer",
+                 OWN / "locale/de/LC_MESSAGES" / (DOMAIN + ".mo")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    say(_("Removed."))
+    if restore and backup_dir:
+        say(_("The earlier files are back. Log out and in again to start them."))
+    elif backup_dir:
+        say(_("Files replaced at installation are still kept in %s") % backup_dir)
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] not in ("install", "uninstall"):
+        say(_("Usage: avincelaunch-helfer install|uninstall [options]"))
+        return 2
+    return install(argv[2:]) if argv[1] == "install" else uninstall(argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

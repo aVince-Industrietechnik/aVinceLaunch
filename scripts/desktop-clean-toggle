@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+# desktop-clean-toggle - "desktop free": hides the aVinceLaunch fences and
+# the desktop icons together, and shows them again.
+#
+# Schritt 4, V3a (B6/E4, P65, T5):
+#   - No org.Cinnamon.Eval any more. The fences watch the marker file
+#     $XDG_STATE_HOME/avincelaunch/schreibtisch-frei (lib/desktopState.js);
+#     this script only creates or removes it. Works the same on X11 and Wayland.
+#   - The marker alone decides (not the number of visible fences), so the
+#     shortcut also works without any fence. It is kept until the next toggle,
+#     also across Cinnamon restarts and logins (decision 13.10., F1).
+#   - Nemo's icon layout is remembered only after the icons were really
+#     hidden by this script, and forgotten when they are shown again - an
+#     "icons off" chosen by the user is never overwritten later.
+#
+# Usage: desktop-clean-toggle [--hide | --show | --status]
+
+set -uo pipefail
+
+# V3b (K9): messages in English, German via gettext (domain avincelaunch-helfer,
+# .mo next to the scripts' installation, see avincelaunch_rules.py).
+export TEXTDOMAIN=avincelaunch-helfer
+for dir in "${XDG_DATA_HOME:-$HOME/.local/share}/locale" "$HOME/.local/share/locale" \
+           "$(dirname "$(readlink -f "$0")")/locale"; do
+    if [[ -n "$(find "$dir" -name "$TEXTDOMAIN.mo" -print -quit 2>/dev/null)" ]]; then
+        export TEXTDOMAINDIR="$dir"
+        break
+    fi
+done
+t() {
+    if command -v gettext >/dev/null 2>&1; then gettext "$1"; else printf '%s' "$1"; fi
+}
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/avincelaunch"
+MARKER="$STATE/schreibtisch-frei"
+NEMO_LAYOUT="$STATE/nemo-layout"
+NEMO_SHOW="$STATE/nemo-show-icons"
+# Before V3 the state lived in desktop-clean-toggle/ (hidden, nemo-layout,
+# nemo-show-icons). Only a hidden desktop carries over; otherwise the old
+# remembered layouts are stale and are dropped.
+OLD_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/desktop-clean-toggle"
+
+mkdir -p "$STATE"
+
+if [[ -d "$OLD_STATE" ]]; then
+    if [[ -e "$OLD_STATE/hidden" ]]; then
+        for name in nemo-layout nemo-show-icons; do
+            if [[ -f "$OLD_STATE/$name" && ! -e "$STATE/$name" ]]; then
+                mv "$OLD_STATE/$name" "$STATE/$name"
+            fi
+        done
+        : > "$MARKER"
+    fi
+    rm -f "$OLD_STATE/hidden" "$OLD_STATE/nemo-layout" "$OLD_STATE/nemo-show-icons"
+    rmdir "$OLD_STATE" 2>/dev/null || true
+fi
+
+nemo_key() {
+    gsettings list-keys org.nemo.desktop 2>/dev/null | grep -qx "$1"
+}
+
+case "${1:-}" in
+    --hide) ACTION=hide ;;
+    --show) ACTION=show ;;
+    --status)
+        if [[ -e "$MARKER" ]]; then echo free; else echo shown; fi
+        exit 0 ;;
+    "")
+        if [[ -e "$MARKER" ]]; then ACTION=show; else ACTION=hide; fi ;;
+    *)
+        echo "$(t "Usage: desktop-clean-toggle [--hide | --show | --status]")" >&2
+        exit 2 ;;
+esac
+
+WAS_FREE=no
+[[ -e "$MARKER" ]] && WAS_FREE=yes
+
+if [[ "$ACTION" == hide && "$WAS_FREE" == yes ]]; then
+    # Already free (e.g. --hide twice): the remembered layout must stay.
+    echo "$(t "Desktop free: fences and desktop icons hidden.")"
+elif [[ "$ACTION" == hide ]]; then
+    # Fences first - they react at once.
+    : > "$MARKER"
+
+    if nemo_key desktop-layout; then
+        CURRENT="$(gsettings get org.nemo.desktop desktop-layout)"
+        if [[ "$CURRENT" == "'false::false'" ]]; then
+            # Already off (the user's own choice): nothing to bring back later.
+            rm -f "$NEMO_LAYOUT"
+        elif gsettings set org.nemo.desktop desktop-layout 'false::false'; then
+            printf '%s\n' "$CURRENT" > "$NEMO_LAYOUT"
+        fi
+    elif nemo_key show-desktop-icons; then
+        CURRENT="$(gsettings get org.nemo.desktop show-desktop-icons)"
+        if [[ "$CURRENT" == "false" ]]; then
+            rm -f "$NEMO_SHOW"
+        elif gsettings set org.nemo.desktop show-desktop-icons false; then
+            printf '%s\n' "$CURRENT" > "$NEMO_SHOW"
+        fi
+    fi
+    echo "$(t "Desktop free: fences and desktop icons hidden.")"
+else
+    rm -f "$MARKER"
+
+    if [[ -f "$NEMO_LAYOUT" ]]; then
+        gsettings set org.nemo.desktop desktop-layout "$(cat "$NEMO_LAYOUT")" \
+            && rm -f "$NEMO_LAYOUT"
+    fi
+    if [[ -f "$NEMO_SHOW" ]]; then
+        gsettings set org.nemo.desktop show-desktop-icons "$(cat "$NEMO_SHOW")" \
+            && rm -f "$NEMO_SHOW"
+    fi
+    echo "$(t "Desktop restored: fences and desktop icons shown.")"
+fi

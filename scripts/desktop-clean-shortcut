@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+# AP15b - Tastenkuerzel Super+Umschalt+D fuer desktop-clean-toggle.
+#
+# Ersetzt unter Wayland den Doppelklick auf den freien Schreibtisch
+# (desktop-doubleclick laeuft nur unter X11); unter X11 kommt es hinzu.
+# Legt das Kuerzel als eigene Cinnamon-Tastenkombination an - auf dieselbe
+# Weise wie Cinnamons Einstellungsdialog (KeybindingTable.py:
+# customN anlegen, custom-list ergaenzen und mit "__dummy__" anstossen,
+# damit Cinnamon die Liste neu einliest).
+#
+# Aufruf (V3b: englische Optionen, die deutschen gelten weiter):
+#     desktop-clean-shortcut                      einrichten (mit Rueckfrage)
+#     desktop-clean-shortcut --yes    (--ja)      einrichten ohne Rueckfrage
+#     desktop-clean-shortcut --check  (--pruefen) nur anzeigen, nichts aendern
+#     desktop-clean-shortcut --remove (--entfernen) eigenes Kuerzel wieder heraus
+#
+# Geschrieben werden nur die eigenen Eintraege. Ist das Kuerzel schon
+# belegt (von Cinnamon oder einem anderen eigenen Kuerzel), wird nichts
+# geaendert.
+
+from pathlib import Path
+import subprocess
+import sys
+
+# Keine __pycache__-Ordner in ~/.local/bin anlegen.
+sys.dont_write_bytecode = True
+
+from gi.repository import Gio
+
+from avincelaunch_rules import _
+
+BINDING = "<Super><Shift>d"
+BINDING_TEXT = _("Super+Shift+D")
+NAME = _("aVinceLaunch: desktop free")
+COMMAND = str(Path.home() / ".local/bin/desktop-clean-toggle")
+
+PARENT_SCHEMA = "org.cinnamon.desktop.keybindings"
+CUSTOM_SCHEMA = "org.cinnamon.desktop.keybindings.custom-keybinding"
+CUSTOM_BASE = "/org/cinnamon/desktop/keybindings/custom-keybindings"
+DUMMY = "__dummy__"
+
+ICON = str(Path.home() / ".local/share/cinnamon/desklets/avincelaunch-desklet@avince/icon.png")
+
+MODIFIER_ALIASES = {
+    "primary": "control",
+    "ctrl": "control",
+    "control": "control",
+    "shift": "shift",
+    "super": "super",
+    "alt": "alt",
+    "mod1": "alt",
+    "meta": "meta",
+    "hyper": "hyper",
+    "mod4": "super",
+}
+
+
+def normalize(accel):
+    """'<Shift><Super>D' und '<Super><Shift>d' sind dasselbe Kuerzel."""
+    text = str(accel or "").strip()
+    mods = []
+    while text.startswith("<") and ">" in text:
+        end = text.index(">")
+        mod = text[1:end].strip().lower()
+        mods.append(MODIFIER_ALIASES.get(mod, mod))
+        text = text[end + 1:]
+    key = text.strip().lower()
+    if not key:
+        return None
+    return (tuple(sorted(set(mods))), key)
+
+
+def custom_settings(entry):
+    return Gio.Settings.new_with_path(CUSTOM_SCHEMA, f"{CUSTOM_BASE}/{entry}/")
+
+
+def custom_entries():
+    parent = Gio.Settings.new(PARENT_SCHEMA)
+    result = []
+    for entry in parent.get_strv("custom-list"):
+        if entry == DUMMY:
+            continue
+        s = custom_settings(entry)
+        result.append({
+            "entry": entry,
+            "name": s.get_string("name"),
+            "command": s.get_string("command"),
+            "binding": list(s.get_strv("binding")),
+        })
+    return result
+
+
+def is_own(entry):
+    return entry["command"].strip().endswith("desktop-clean-toggle")
+
+
+def builtin_owners(target):
+    """Alle festen Kuerzel aus Cinnamons (und Muffins) Tastenschemata."""
+    owners = []
+    source = Gio.SettingsSchemaSource.get_default()
+    if source is None:
+        return owners
+    schema_ids = source.list_schemas(True)[0]
+    for schema_id in schema_ids:
+        if "keybindings" not in schema_id:
+            continue
+        schema = source.lookup(schema_id, True)
+        if schema is None or schema.get_path() is None:
+            continue
+        settings = Gio.Settings.new(schema_id)
+        for key in schema.list_keys():
+            if schema.get_key(key).get_value_type().dup_string() != "as":
+                continue
+            for accel in settings.get_strv(key):
+                if normalize(accel) == target:
+                    owners.append(f"{schema_id} {key}")
+    return owners
+
+
+def collisions():
+    target = normalize(BINDING)
+    found = builtin_owners(target)
+    for entry in custom_entries():
+        if is_own(entry):
+            continue
+        if any(normalize(b) == target for b in entry["binding"]):
+            found.append(f"eigenes Kuerzel '{entry['name']}' ({entry['entry']})")
+    return found
+
+
+def touch_list(entries):
+    if DUMMY in entries:
+        entries.remove(DUMMY)
+    else:
+        entries.append(DUMMY)
+    return entries
+
+
+def next_free_entry(entries):
+    used = set()
+    for entry in entries:
+        if entry.startswith("custom") and entry[6:].isdigit():
+            used.add(int(entry[6:]))
+    n = 0
+    while n in used:
+        n += 1
+    return f"custom{n}"
+
+
+def install():
+    parent = Gio.Settings.new(PARENT_SCHEMA)
+    entries = list(parent.get_strv("custom-list"))
+    entry = next_free_entry(entries)
+    s = custom_settings(entry)
+    s.set_string("name", NAME)
+    s.set_string("command", COMMAND)
+    s.set_strv("binding", [BINDING])
+    entries.append(entry)
+    parent.set_strv("custom-list", touch_list(entries))
+    Gio.Settings.sync()
+    return entry
+
+
+def remove(own):
+    parent = Gio.Settings.new(PARENT_SCHEMA)
+    entries = list(parent.get_strv("custom-list"))
+    for item in own:
+        s = custom_settings(item["entry"])
+        s.delay()
+        for key in ("name", "command", "binding"):
+            s.reset(key)
+        s.apply()
+        if item["entry"] in entries:
+            entries.remove(item["entry"])
+    parent.set_strv("custom-list", touch_list(entries))
+    Gio.Settings.sync()
+
+
+def ask(text):
+    try:
+        result = subprocess.run(
+            ["zenity", "--question", "--title=aVinceLaunch", "--width=420", f"--text={text}"],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        answer = input(text + " " + _("[y/N]") + " ")
+        return answer.strip().lower() in ("j", "ja", "y", "yes")
+
+
+def say(text):
+    print(text)
+    subprocess.run(
+        ["notify-send", "--app-name=aVinceLaunch", f"--icon={ICON}", "aVinceLaunch", text],
+        capture_output=True,
+    )
+
+
+def readable(entry):
+    """Eintrag fuer die Anzeige: Tastenkuerzel als Text statt als Liste."""
+    return dict(entry, binding=", ".join(entry["binding"]) or "-")
+
+
+def main(args):
+    own = [readable(e) for e in custom_entries() if is_own(e)]
+    check_only = "--check" in args or "--pruefen" in args
+    remove_own = "--remove" in args or "--entfernen" in args
+    no_question = "--yes" in args or "--ja" in args
+
+    if check_only:
+        if own:
+            for e in own:
+                print(_("set up: %(entry)s '%(name)s' %(binding)s -> %(command)s") % e)
+        else:
+            print(_("not set up"))
+        others = collisions()
+        if others:
+            print(_("Shortcut %(key)s is taken by: %(owners)s")
+                  % {"key": BINDING_TEXT, "owners": "; ".join(others)})
+        else:
+            print(_("Shortcut %s is free") % BINDING_TEXT)
+        return 0
+
+    if remove_own:
+        if not own:
+            print(_("No own shortcut set up - nothing to do."))
+            return 0
+        remove(own)
+        say(_("Shortcut %s removed.") % BINDING_TEXT)
+        return 0
+
+    if own:
+        print(_("Already set up (%(entry)s, %(binding)s) - nothing changed.") % own[0])
+        return 0
+
+    others = collisions()
+    if others:
+        say(_("%(key)s is already taken (%(owners)s) – nothing changed.")
+            % {"key": BINDING_TEXT, "owners": "; ".join(others)})
+        return 1
+
+    if not Path(COMMAND).exists():
+        say(_("desktop-clean-toggle is missing in ~/.local/bin – nothing changed."))
+        return 1
+
+    if not no_question and not ask(
+            _("Set up the shortcut %s?\n\n"
+              "It hides all fences and the desktop icons and shows them again "
+              "(like a double-click on the free desktop).") % BINDING_TEXT):
+        print(_("Cancelled - nothing changed."))
+        return 0
+
+    entry = install()
+    say(_("Shortcut %s set up: desktop free.") % BINDING_TEXT)
+    print(_("created: %s") % entry)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

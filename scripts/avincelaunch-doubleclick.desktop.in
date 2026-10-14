@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=aVinceLaunch double-click on the desktop
+Name[de]=aVinceLaunch Doppelklick auf den Schreibtisch
+Comment=Double-click on the free desktop hides or shows fences and desktop icons (X11 only; listens to mouse buttons only)
+Comment[de]=Doppelklick auf den freien Schreibtisch blendet Fences und Schreibtischsymbole aus und ein (nur X11; hört nur Maustasten)
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+X-GNOME-Autostart-enabled=true
+StartupNotify=false

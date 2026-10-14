@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+# AP18-2 - Programmsymbole vom freien Schreibtisch in einen Fence verschieben.
+#
+# Aufruf ueber die Nemo-Aktion avincelaunch-move-to-fence.nemo_action
+# (Rechtsklick auf ein Symbol auf dem Schreibtisch) oder von Hand:
+#     launcher-move ~/Schreibtisch/firefox.desktop [GRUPPE]
+#
+# Verschoben wird nur die .desktop-Datei (die Verknuepfung), nie ein
+# Programm. Ein gleichnamiger Eintrag im Fence wird nie ueberschrieben;
+# dann wird angeboten, das Symbol nur vom Schreibtisch zu entfernen
+# (Papierkorb). Der Fence nimmt den neuen Eintrag beim naechsten Einlesen
+# von selbst ans Ende seiner Reihenfolge.
+
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+# Keine __pycache__-Ordner in ~/.local/bin anlegen.
+sys.dont_write_bytecode = True
+
+# Gruppen und Basisordner kommen aus EINER Stelle (AP11).
+import avincelaunch_rules as rules
+from avincelaunch_rules import _, ngettext
+
+
+ICON = str(Path.home() / ".local/share/cinnamon/desklets/avincelaunch-desklet@avince/icon.png")
+
+
+def desktop_name(path):
+    # V5f / N30: uebersetzter Name wie im Startmenue.
+    return rules.desktop_names(path)[0] or path.stem
+
+
+def zenity(*args):
+    return subprocess.run(
+        ["zenity", "--title=aVinceLaunch", *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def notify(text):
+    subprocess.run(
+        ["notify-send", "--app-name=aVinceLaunch", f"--icon={ICON}", "aVinceLaunch", text],
+        capture_output=True,
+    )
+
+
+def ask_group(groups, question):
+    args = [
+        "--list",
+        "--radiolist",
+        f"--text=<span size='large' weight='bold'>{question}</span>",
+        "--width=550",
+        "--height=500",
+        "--column=",
+        "--column=Fence",
+    ]
+    first = True
+    for key, label in groups:
+        args += ["TRUE" if first else "FALSE", label]
+        first = False
+
+    result = zenity(*args)
+    if result.returncode != 0:
+        return None
+    selected = result.stdout.strip()
+    for key, label in groups:
+        if selected == label:
+            return key
+    return None
+
+
+def markup(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def main():
+    paths = [Path(p) for p in sys.argv[1:]]
+    group_arg = None
+    # Letztes Argument ohne Pfad = Gruppe (Aufruf von Hand).
+    if paths and not paths[-1].exists() and len(paths) > 1:
+        group_arg = str(paths.pop())
+
+    if not paths:
+        print(_("Usage: launcher-move FILE.desktop [...] [GROUP]"))
+        return 1
+
+    launchers = [p for p in paths if p.suffix == ".desktop" and p.is_file()]
+    skipped = [p for p in paths if p not in launchers]
+    if skipped:
+        # Ruhiger Hinweis statt Warnung (Angelo 06.10.): die Aktion steht
+        # bei allen Schreibtisch-Dateien im Menue, Nemo kann sie nicht auf
+        # Programmsymbole beschraenken.
+        names = "\n".join(_("“%s”") % p.name for p in skipped)
+        zenity("--info", "--width=420", "--icon-name=dialog-information",
+               "--text=" + markup(names) + "\n\n"
+               + ngettext("This is not a launcher and stays on the desktop. "
+                          "Only launchers can be moved into a fence.",
+                          "These are not launchers and stay on the desktop. "
+                          "Only launchers can be moved into a fence.", len(skipped)))
+    if not launchers:
+        return 1
+
+    # AP18-4: Fences mit gesperrtem Inhalt nehmen nichts an.
+    groups = rules.get_groups(include_locked=False)
+    if not groups:
+        zenity("--error", "--width=420",
+               "--text=" + _("No group fence found that accepts launchers "
+                             "(content locked everywhere?)."))
+        return 1
+
+    if group_arg:
+        group = rules.find_group(group_arg, groups)
+        if group is None:
+            print(_("Unknown group:"), group_arg)
+            print(_("Groups:"), ", ".join(key for key, _label in groups))
+            return 1
+    else:
+        if len(launchers) == 1:
+            question = _("Move “%s” into which fence?") % markup(desktop_name(launchers[0]))
+        else:
+            question = _("Move %d launchers into which fence?") % len(launchers)
+        group = ask_group(groups, question)
+        if group is None:
+            return 0
+
+    label = dict(groups).get(group, group)
+    target_dir = rules.base_directory() / group
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    moved = []
+    for source in launchers:
+        name = desktop_name(source)
+        target = target_dir / source.name
+        if target.exists() or target.is_symlink():
+            # Nie ueberschreiben (Auftrag AP18).
+            answer = zenity(
+                "--question", "--width=460",
+                "--text=" + _("“%(name)s” is already in %(fence)s.\n\n"
+                              "Only remove it from the desktop? The launcher goes to the trash.")
+                % {"name": markup(name), "fence": markup(label)},
+            )
+            if answer.returncode == 0:
+                subprocess.run(["gio", "trash", str(source)], capture_output=True)
+                print(_("%(name)s: already in %(fence)s, moved from the desktop to the trash")
+                      % {"name": name, "fence": label})
+            continue
+        try:
+            shutil.move(str(source), str(target))
+            target.chmod(0o755)
+        except Exception as e:
+            zenity("--error", "--width=420",
+                   "--text=" + _("“%(name)s” could not be moved:\n\n%(error)s")
+                   % {"name": markup(name), "error": markup(str(e))})
+            continue
+        moved.append(name)
+        print(f"{name} -> {label}")
+
+    if len(moved) == 1:
+        notify(_("“%(name)s” moved to %(fence)s.") % {"name": moved[0], "fence": label})
+    elif moved:
+        notify(_("%(count)d launchers moved to %(fence)s.") % {"count": len(moved), "fence": label})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

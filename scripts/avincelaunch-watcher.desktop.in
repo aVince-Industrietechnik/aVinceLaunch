@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=aVinceLaunch program watcher
+Name[de]=aVinceLaunch Programm-Wächter
+Comment=Asks which fence newly installed programs and web apps should go into
+Comment[de]=Fragt nach der Zuordnung neu installierter Programme und WebApps
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+X-GNOME-Autostart-enabled=true
+StartupNotify=false

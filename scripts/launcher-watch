@@ -1,0 +1,961 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+from pathlib import Path
+import json
+import subprocess
+import time
+import sys
+import fcntl
+import datetime
+import html
+import os
+import signal
+import tempfile
+
+# Keine __pycache__-Ordner in ~/.local/bin anlegen.
+sys.dont_write_bytecode = True
+
+# Gruppen und Basisordner kommen aus EINER Stelle (AP11).
+import avincelaunch_rules as rules
+from avincelaunch_rules import _
+
+HOME = Path.home()
+
+# Pruefung Phase 3 Teil 2 (T1): Zustand unter $XDG_DATA_HOME wie alle
+# anderen Daten (rules.DATA_HOME, sonst ~/.local/share).
+STATE_DIR = rules.DATA_HOME / "thelauncher-watcher"
+STATE_FILE = STATE_DIR / "state.json"
+LOCK_FILE = STATE_DIR / "watcher.lock"
+LOG_FILE = STATE_DIR / "watcher.log"
+LOG_FILE_OLD = STATE_DIR / "watcher.log.1"
+
+# Groesse, ab der das Protokoll einmal umbenannt wird.
+# Verhindert, dass die Datei unbemerkt auf mehrere Megabyte waechst.
+LOG_MAX_BYTES = 1_000_000
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Pruefung Phase 2, B14 (P51): Programmordner aus der Systemeinstellung
+# (rules.app_dirs). Ordner, die der Waechter zum ersten Mal sieht, werden
+# still uebernommen (sync_app_dirs) - sonst kaemen Rueckfragen zu allem, was
+# dort schon liegt.
+def current_app_dirs():
+    return rules.app_dirs()
+
+DESKLET_DIRS = [
+    HOME / ".local/share/cinnamon/desklets",
+]
+
+def rotate_log():
+    # Ist das Protokoll zu gross geworden, wird es einmal nach
+    # watcher.log.1 umbenannt. Eine aeltere watcher.log.1 wird dabei
+    # ersetzt. Es bleiben also hoechstens zwei Dateien uebrig.
+    try:
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_MAX_BYTES:
+            LOG_FILE.replace(LOG_FILE_OLD)
+    except Exception:
+        # Protokollpflege darf den Waechter nie stoppen.
+        pass
+
+def log(text):
+    rotate_log()
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with LOG_FILE.open("a") as f:
+        f.write(f"{stamp}  {text}\n")
+
+# Teil 2 (N7): Meldungen des Hilfsmoduls (kaputte config.json, <ID>.json ...)
+# ins Protokoll statt nach stderr.
+rules.REPORT = log
+
+# Letzte Zeile der Fence-Auswahl: dauerhaft nicht einsortieren.
+NOT_SORTED = _("DO NOT SORT IN")
+
+def notify(title, text):
+    try:
+        subprocess.Popen([
+            "notify-send",
+            title,
+            text
+        ])
+    except Exception:
+        pass
+
+def parse_desktop(path):
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except Exception:
+        return None
+
+    data = {}
+
+    in_entry = False
+
+    for line in lines:
+        line = line.strip()
+
+        if line == "[Desktop Entry]":
+            in_entry = True
+            continue
+
+        if line.startswith("[") and line.endswith("]"):
+            if in_entry:
+                break
+
+        if not in_entry or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+
+        if key in (
+            "Type", "Name", "Exec", "Icon",
+            "NoDisplay", "Hidden", "Categories"
+        ):
+            data.setdefault(key, value.strip())
+
+    if data.get("Type", "Application") != "Application":
+        return None
+
+    if data.get("NoDisplay", "").lower() == "true":
+        return None
+
+    if data.get("Hidden", "").lower() == "true":
+        return None
+
+    if not data.get("Name") or not data.get("Exec"):
+        return None
+
+    return data
+
+def get_apps(directories=None):
+    result = {}
+
+    for directory in (current_app_dirs() if directories is None else directories):
+        if not directory.exists():
+            continue
+
+        try:
+            files = directory.glob("*.desktop")
+
+            for path in files:
+                try:
+                    if not path.exists():
+                        continue
+
+                    data = parse_desktop(path)
+
+                    if data is None:
+                        continue
+
+                    result[str(path)] = data
+
+                except Exception:
+                    continue
+
+        except Exception:
+            continue
+
+    return result
+
+def get_desklets():
+    result = {}
+
+    for directory in DESKLET_DIRS:
+        if not directory.exists():
+            continue
+
+        for item in directory.iterdir():
+            if not item.is_dir():
+                continue
+
+            metadata = item / "metadata.json"
+
+            if not metadata.exists():
+                continue
+
+            name = item.name
+
+            try:
+                data = json.loads(
+                    metadata.read_text(errors="ignore")
+                )
+
+                name = data.get("name", name)
+
+            except Exception:
+                pass
+
+            result[str(item)] = name
+
+    return result
+
+def current_inventory():
+    """Heutiger Bestand als Zustand: alles gilt als gesehen."""
+    return {
+        "apps": sorted(get_apps().keys()),
+        "desklets": sorted(get_desklets().keys()),
+        "dirs": sorted(str(d) for d in current_app_dirs()),
+    }
+
+
+def sync_app_dirs(state, directories=None):
+    """B14: Programmordner, die der Waechter noch nicht kennt, aufnehmen.
+
+    Gibt es den Ordner schon, gelten seine Programme als gesehen (still,
+    eine Zeile im Protokoll). Fehlt er, wird nur der Name gemerkt - taucht er
+    spaeter auf, wird nach seinen Programmen gefragt wie bei jedem neuen.
+    Eine aeltere state.json ohne "dirs" kannte die vier festen Ordner.
+    Liefert True, wenn state geaendert wurde."""
+    directories = current_app_dirs() if directories is None else directories
+    changed = False
+    if not isinstance(state.get("dirs"), list):
+        state["dirs"] = sorted(str(d) for d in rules.LEGACY_APP_DIRS)
+        changed = True
+    known = set(state["dirs"])
+    seen = set(state.get("apps", []))
+    for directory in directories:
+        name = str(directory)
+        if name in known:
+            continue
+        known.add(name)
+        changed = True
+        if directory.is_dir():
+            found = set(get_apps([directory]).keys()) - seen
+            seen |= found
+            log(f"New program folder: {name} ({len(found)} programs silently taken as seen)")
+        else:
+            log(f"Program folder noted (does not exist yet): {name}")
+    if changed:
+        state["dirs"] = sorted(known)
+        state["apps"] = sorted(seen)
+    return changed
+
+def _secure_broken_state(raw):
+    # Kaputte state.json nicht wegwerfen: Kopie state.json.broken-<Zeit>.
+    # Teil 2 (T4): je Inhalt nur EINE Kopie - scheitert das Speichern danach
+    # dauerhaft, entstand sonst alle 8 s eine weitere.
+    try:
+        for existing in sorted(STATE_DIR.glob("state.json.broken-*")):
+            try:
+                if existing.read_bytes() == raw:
+                    return existing
+            except OSError:
+                continue
+    except OSError:
+        pass
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    for number in range(1, 100):
+        suffix = stamp if number == 1 else f"{stamp}-{number}"
+        target = STATE_DIR / f"state.json.broken-{suffix}"
+        try:
+            with target.open("xb") as handle:
+                handle.write(raw)
+            return target
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+    return None
+
+def load_state():
+    # Pruefung Phase 2, A3-3 (P14): Fehlt state.json oder ist sie kaputt,
+    # galt frueher jedes installierte Programm als neu - Dutzende Rueckfragen
+    # alle 8 s. Jetzt wird der heutige Bestand als Grundlinie uebernommen
+    # (wie --baseline); eine kaputte Datei wird vorher gesichert.
+    try:
+        raw = STATE_FILE.read_bytes()
+    except FileNotFoundError:
+        state = current_inventory()
+        save_state(state)
+        log(
+            f"No inventory (state.json missing): today's programs taken as "
+            f"baseline ({len(state['apps'])} programs, "
+            f"{len(state['desklets'])} desklets)"
+        )
+        return state
+
+    try:
+        state = json.loads(raw.decode("utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("not a JSON object")
+        # Teil 2 (T4): ohne "apps" (z. B. "{}") galt bisher jedes Programm
+        # als neu - dieselbe Rueckfrageflut wie bei fehlender Datei.
+        if not isinstance(state.get("apps"), list):
+            raise ValueError("apps missing or not a list")
+        if not isinstance(state.get("desklets", []), list):
+            raise ValueError("desklets not a list")
+        return state
+    except Exception as e:
+        backup = _secure_broken_state(raw)
+        state = current_inventory()
+        save_state(state)
+        log(
+            f"state.json not readable ({e}); copy: "
+            f"{backup.name if backup else 'not possible'}. Today's programs "
+            f"taken as baseline ({len(state['apps'])} programs, "
+            f"{len(state['desklets'])} desklets)"
+        )
+        return state
+
+def save_state(state):
+    # A3-3 (P14): atomar - ein Abbruch hinterlaesst nie eine halbe Datei.
+    text = json.dumps(
+        state,
+        indent=4,
+        ensure_ascii=False
+    ) + "\n"
+    try:
+        mode = STATE_FILE.stat().st_mode & 0o7777
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".state.json.", suffix=".tmp", dir=str(STATE_DIR)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, STATE_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+# Regelziele ohne Fence nur einmal je Lauf protokollieren.
+_logged_missing = set()
+_logged_no_group = set()
+
+def choose_group(name, source, data, mode, rule_list):
+    # Angeboten werden die Fences, die auf dem Schreibtisch stehen
+    # (ohne Portale). Der alte Sammelordner ist kein Ziel mehr, was dort
+    # liegt, gilt aber weiter als einsortiert (already_in_launcher).
+    # P24: Fences mit gesperrtem Inhalt (AP18-4) nehmen nichts an - wie
+    # launcher-move und das Symbol-Menue des Desklets.
+    groups = rules.get_groups(include_locked=False)
+
+    if not groups:
+        # Nur einmal je Programm protokollieren, nicht alle 8 s.
+        if name not in _logged_no_group:
+            _logged_no_group.add(name)
+            log(f"No fence accepts programs (none there or content "
+                f"locked everywhere), will check again later: {name}")
+        return "__WAIT__"
+
+    for target in rules.missing_targets(rule_list, groups):
+        if target not in _logged_missing:
+            _logged_missing.add(target)
+            log(f"Rule target without fence or with locked content, "
+                f"rule skipped: {target}")
+
+    # "suggest": passender Fence vorausgewaehlt, ohne Treffer keiner.
+    # "ask": wie vor AP11, der erste Fence ist vorausgewaehlt.
+    hint = ""
+    if mode == "suggest":
+        preselect, reason = rules.suggest(
+            data, source.name, rule_list, groups
+        )
+        # Farben kraeftig genug fuer helle und dunkle Themen:
+        # gruen = Vorschlag, orange = keiner (Angelo, 05.10.2026).
+        if preselect:
+            label = dict(groups)[preselect]
+            hint = (
+                "<span size='large' weight='bold' foreground='#26A269'>"
+                + html.escape(_("Suggestion: %s") % label) + "</span>\n"
+                f"<span foreground='#26A269'>({html.escape(reason)})</span>"
+                "\n\n"
+            )
+        else:
+            hint = (
+                "<span size='large' weight='bold' foreground='#C64600'>"
+                + html.escape(_("No suggestion – please choose a fence."))
+                + "</span>\n\n"
+            )
+    else:
+        preselect = groups[0][0]
+
+    args = [
+        "zenity",
+        "--list",
+        "--radiolist",
+        "--title=" + _("New program found"),
+        "--width=620",
+        "--height=520",
+        # Der Text ist Pango-Markup: "&" oder "<" im Programmnamen
+        # muessen maskiert werden, sonst zeigt zenity nichts Lesbares.
+        "--text="
+        f"<b>{html.escape(name)}</b>\n\n"
+        f"{html.escape(source.name)}\n\n"
+        f"{hint}"
+        "<span size='large' weight='bold'>"
+        + html.escape(_("Which aVinceLaunch fence should the program go into?"))
+        + "</span>",
+        "--column=",
+        "--column=Fence",
+    ]
+
+    for key, label in groups:
+        args += [
+            "TRUE" if key == preselect else "FALSE",
+            label,
+        ]
+
+    args += [
+        "FALSE",
+        NOT_SORTED,
+    ]
+
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            # Abbrechen / Fenster schließen:
+            # NICHT als bearbeitet speichern.
+            return "__CANCEL__"
+
+        selected = result.stdout.strip()
+
+    except Exception as e:
+        log(f"zenity error: {e}")
+        return "__CANCEL__"
+
+    if selected == NOT_SORTED:
+        # Bewusste Entscheidung:
+        # dauerhaft als bearbeitet speichern.
+        return "__SKIP__"
+
+    for key, label in groups:
+        if selected == label:
+            return key
+
+    # OK ohne Auswahl (moeglich, wenn nichts vorausgewaehlt war).
+    log(f"Nothing chosen, will ask again: {name}")
+    return None
+
+def install_launcher(source, group):
+    # Pruefung Phase 3 Teil 2 (T3, wie P23 in launcher-add): nie
+    # ueberschreiben - auch keine inzwischen von Hand angelegte Kopie oder
+    # einen toten Verweis -, nie eine halbe Datei (Zwischendatei + exklusives
+    # Anlegen, rules.install_desktop_file). Bisher shutil.copy2: ersetzte
+    # die Datei, schrieb durch tote Verweise und konnte bei einem Abbruch
+    # eine abgeschnittene .desktop hinterlassen.
+    target_dir = rules.base_directory() / group
+    target, problem = rules.install_desktop_file(source, target_dir)
+    if target:
+        return target
+    if problem == "exists":
+        # Im naechsten Lauf erkennt already_in_launcher den Namen (lexists)
+        # und vermerkt das Programm als einsortiert - keine Endlosfrage.
+        log(f"Already there, not overwritten: {target_dir / source.name}")
+    else:
+        log(f"Copy error {source} -> {target_dir / source.name}: {problem}")
+    return None
+
+def handle_new_app(path_string, data):
+    source = Path(path_string)
+
+    if rules.already_in_launcher(source.name):
+        # Liegt das Programm bereits in einer Gruppe, ist nichts zu tun.
+        # Rueckgabe True heisst: als erledigt vermerken. Ohne diese
+        # Rueckgabe wurde der Eintrag nie gespeichert und deshalb alle
+        # acht Sekunden erneut geprueft und protokolliert.
+        log(f"Already in aVinceLaunch: {source}")
+        return True
+
+    name = data.get("Name", source.stem)
+
+    mode, rule_list, notes = rules.load_rules()
+
+    for note in notes:
+        log(f"Rules: {note}")
+
+    if mode == "off":
+        # Betriebsart "off": nicht fragen, aber als gesehen vermerken,
+        # damit beim Wiedereinschalten keine Flut alter Fragen kommt.
+        log(f"Mode off, not asked: {name}")
+        return True
+
+    decision = choose_group(
+        name,
+        source,
+        data,
+        mode,
+        rule_list
+    )
+
+    if decision is None:
+        return False
+
+    if decision == "__WAIT__":
+        return False
+
+    if decision == "__CANCEL__":
+        log(f"Cancelled, will ask again: {name}")
+        return False
+
+    if decision == "__SKIP__":
+        log(f"Permanently not sorted in: {name}")
+        return True
+
+    group = decision
+
+    target = install_launcher(
+        source,
+        group
+    )
+
+    if target:
+        label = dict(rules.get_groups()).get(group, group)
+
+        notify(
+            "aVinceLaunch",
+            _("%(name)s was sorted into %(fence)s.") % {"name": name, "fence": label}
+        )
+
+        log(
+            f"Sorted in: {name} -> {group}"
+        )
+
+        return True
+
+    # Kopieren fehlgeschlagen -> später erneut versuchen
+    return False
+
+def handle_new_desklet(path_string, name):
+    text = _("New Cinnamon desklet found:\n\n%s\n\n"
+             "Desklets run directly on the desktop and are not sorted into "
+             "aVinceLaunch as a launcher.\n\n"
+             "Open the desklet settings?") % name
+
+    try:
+        result = subprocess.run([
+            "zenity",
+            "--question",
+            "--title=" + _("New desklet found"),
+            "--width=500",
+            f"--text={text}",
+            "--ok-label=" + _("Open desklet settings"),
+            "--cancel-label=" + _("Later"),
+        ])
+
+        if result.returncode == 0:
+            subprocess.Popen([
+                "cinnamon-settings",
+                "desklets"
+            ])
+
+    except Exception as e:
+        log(f"Desklet dialog error: {e}")
+
+def baseline():
+    state = current_inventory()
+
+    save_state(state)
+
+    print(
+        "Ausgangsbestand gespeichert:"
+    )
+    print(
+        "Programme/WebApps:", len(state["apps"])
+    )
+    print(
+        "Desklets:", len(state["desklets"])
+    )
+
+# --------------------------------------------------------------------
+# B1b (Pruefung Phase 2, P15): Der Waechter gehoert zu seiner Sitzung.
+# Frueher ueberlebte er das Abmelden (Sitzung "closing"), hielt die Sperre
+# und der Waechter der neuen Sitzung beendete sich still. Jetzt:
+#   - er endet, sobald seine Sitzung nicht mehr aktiv ist;
+#   - ein neuer Waechter beendet den Halter der Sperre, wenn das ein Waechter
+#     aus einer toten Sitzung ist, und uebernimmt die Sperre (Teil 2, T2:
+#     nur den Halter, gezielt ueber pidfd). Im Zweifel (Zustand unbekannt) gilt eine
+#     Sitzung als lebendig - es wird nie ein Waechter einer lebenden
+#     Sitzung beendet.
+# --------------------------------------------------------------------
+SESSIONS_DIR = Path("/run/systemd/sessions")
+SESSION_ID = os.environ.get("XDG_SESSION_ID", "")
+ALIVE_STATES = ("active", "online", "opening")
+
+def session_state(session_id):
+    """Zustand einer Anmeldesitzung: active/online/closing/..., "gone" wenn
+    es sie nicht mehr gibt, None wenn unbekannt."""
+    if not session_id:
+        return None
+    try:
+        for line in (SESSIONS_DIR / session_id).read_text().splitlines():
+            if line.startswith("STATE="):
+                return line.split("=", 1)[1].strip()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    try:
+        result = subprocess.run(
+            ["loginctl", "show-session", session_id, "-p", "State", "--value"],
+            capture_output=True, text=True, timeout=5,
+            env=dict(os.environ, LC_ALL="C", LANG="C", LANGUAGE="C")
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        # Teil 2 (T17): nur "No session ... known" heisst weg. Jeder andere
+        # Fehler (z. B. "Failed to connect to bus") ist "unbekannt" - sonst
+        # beendete ein voruebergehender Fehler einen lebenden Waechter.
+        return "gone" if "No session" in (result.stderr or "") else None
+    return result.stdout.strip() or None
+
+def session_alive(session_id):
+    state = session_state(session_id)
+    return state is None or state in ALIVE_STATES
+
+def _process_info(pid):
+    """(argv, XDG_SESSION_ID) eines Prozesses oder None."""
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    session = ""
+    for entry in environ:
+        if entry.startswith(b"XDG_SESSION_ID="):
+            session = entry.split(b"=", 1)[1].decode(errors="ignore")
+    return [a.decode(errors="ignore") for a in argv if a], session
+
+def _start_time(pid):
+    """Startzeit eines lebenden Prozesses (Feld 22 von /proc/<pid>/stat) oder
+    None - auch fuer Zombies, die nur noch auf ihren Elternprozess warten."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except (OSError, IndexError):
+        return None
+    if not fields or fields[0] in ("Z", "X"):
+        return None
+    try:
+        return int(fields[19])
+    except (IndexError, ValueError):
+        return None
+
+def _is_watcher_argv(argv):
+    """Ein laufender Waechter: Python-Interpreter + Skript launcher-watch
+    (so startet ihn der Autostart ueber "#!/usr/bin/env python3"). Ein Editor
+    oder Pager mit dieser Datei ("vim .../launcher-watch") ist keiner."""
+    return (len(argv) >= 2 and Path(argv[0]).name.startswith("python")
+            and Path(argv[1]).name == "launcher-watch")
+
+def lock_holder():
+    """(PID, Sitzung) laut watcher.lock oder None - der Halter schreibt beides
+    beim Holen der Sperre hinein (acquire_lock)."""
+    try:
+        parts = LOCK_FILE.read_text().split()
+    except OSError:
+        return None
+    if not parts:
+        return None
+    try:
+        return int(parts[-1]), " ".join(parts[:-1])
+    except ValueError:
+        return None
+
+def stale_lock_holder():
+    """Teil 2 (T2): nur der HALTER DER SPERRE kommt in Frage - und nur, wenn er
+    ein Waechter (Python + launcher-watch) aus einer Sitzung ist, die nicht
+    mehr lebt. Liefert (PID, Sitzung, Startzeit) oder None.
+    Bisher: jeder Prozess des Benutzers, in dessen argv[0] oder argv[1]
+    launcher-watch stand - auch "vim .../launcher-watch" in einem nach dem
+    Abmelden weiterlaufenden tmux."""
+    holder = lock_holder()
+    if holder is None:
+        return None
+    pid = holder[0]
+    if pid in (os.getpid(), os.getppid()):
+        return None
+    start = _start_time(pid)
+    info = _process_info(pid)
+    if start is None or info is None:
+        return None
+    argv, session = info
+    if not _is_watcher_argv(argv):
+        return None
+    if not session or session == SESSION_ID or session_alive(session):
+        return None
+    return pid, session, start
+
+def stop_stale_watcher():
+    """Beendet den Halter der Sperre, wenn er ein Waechter einer toten Sitzung
+    ist - und nur ihn. Gezielt ueber pidfd; die Startzeit stellt sicher, dass
+    die PID nicht inzwischen einem anderen Prozess gehoert. Liefert [PID],
+    wenn er wirklich weg ist, sonst []."""
+    found = stale_lock_holder()
+    if found is None:
+        return []
+    pid, session, start = found
+    pidfd = None
+    try:
+        try:
+            pidfd = os.pidfd_open(pid)
+        except (AttributeError, OSError):
+            pidfd = None
+        if _start_time(pid) != start:
+            return []
+        if pidfd is not None:
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return []
+    finally:
+        if pidfd is not None:
+            os.close(pidfd)
+    for _ in range(50):
+        if _start_time(pid) != start:
+            log(f"Old watcher from ended session {session} stopped (PID {pid})")
+            return [pid]
+        time.sleep(0.1)
+    log(f"Old watcher from ended session {session} (PID {pid}) does not respond - "
+        f"not taken over")
+    return []
+
+def acquire_lock():
+    """Sperre holen; ein Waechter einer toten Sitzung wird dafuer beendet.
+    Liefert die offene Sperrdatei oder None (anderer lebender Waechter)."""
+    for attempt in range(2):
+        # "a": die Sperrdatei nicht leeren, solange ein anderer sie haelt.
+        lock = LOCK_FILE.open("a")
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            if attempt == 0 and stop_stale_watcher():
+                continue
+            return None
+        lock.seek(0)
+        lock.truncate()
+        lock.write(f"{SESSION_ID} {os.getpid()}\n")
+        lock.flush()
+        return lock
+    return None
+
+def run_watcher():
+    lock = acquire_lock()
+
+    if lock is None:
+        return
+
+    log(f"Watcher started (session {SESSION_ID or '?'})")
+
+    while True:
+        if SESSION_ID and not session_alive(SESSION_ID):
+            log(f"Session {SESSION_ID} ended "
+                f"({session_state(SESSION_ID)}) - watcher stops")
+            return
+
+        try:
+            state = load_state()
+            if sync_app_dirs(state):
+                save_state(state)
+
+            seen_apps = set(
+                state.get("apps", [])
+            )
+
+            seen_desklets = set(
+                state.get("desklets", [])
+            )
+
+            # ----------------------------
+            # Anwendungen / WebApps
+            # ----------------------------
+
+            apps = get_apps()
+
+            for path in sorted(
+                set(apps) - seen_apps
+            ):
+                handled = handle_new_app(
+                    path,
+                    apps[path]
+                )
+
+                # Nur speichern, wenn tatsächlich entschieden wurde:
+                # - Fenster gewählt
+                # - NICHT EINSORTIEREN gewählt
+                #
+                # Bei ABBRECHEN bleibt die App offen und wird
+                # beim nächsten Prüflauf erneut angeboten.
+                if handled:
+                    seen_apps.add(path)
+
+                    state["apps"] = sorted(
+                        seen_apps
+                    )
+
+                    save_state(state)
+
+            # ----------------------------
+            # Cinnamon Desklets
+            # ----------------------------
+
+            desklets = get_desklets()
+
+            for path in sorted(
+                set(desklets) - seen_desklets
+            ):
+                handle_new_desklet(
+                    path,
+                    desklets[path]
+                )
+
+                seen_desklets.add(path)
+
+                state["desklets"] = sorted(
+                    seen_desklets
+                )
+
+                save_state(state)
+
+        except Exception as e:
+            log(f"Watcher error: {e}")
+
+        time.sleep(8)
+
+def read_desktop_info(path):
+    """Felder einer .desktop-Datei, auch wenn sie versteckt ist."""
+    data = parse_desktop(path)
+    if data is not None:
+        return data
+    try:
+        info = {}
+        for line in path.read_text(errors="ignore").splitlines():
+            if "=" in line and not line.startswith("["):
+                key, value = line.split("=", 1)
+                info.setdefault(key.strip(), value.strip())
+        return info
+    except Exception:
+        return None
+
+def print_suggestion(filename):
+    # Pruefaufruf ohne Dialog: Was wuerde der Waechter vorschlagen?
+    path = Path(filename)
+    data = read_desktop_info(path)
+    if data is None:
+        print(_("File not readable:"), path)
+        return 1
+
+    mode, rule_list, notes = rules.load_rules()
+    for note in notes:
+        print(_("Note:"), note)
+
+    groups = rules.get_groups()
+    target, reason = rules.suggest(data, path.name, rule_list, groups)
+
+    print(_("Program:"), data.get("Name", path.stem))
+    print(_("Categories:"), data.get("Categories", "") or "-")
+    print(_("Mode:"), mode)
+    if target:
+        print(_("Suggestion:"), dict(groups)[target], f"({reason})")
+    else:
+        print(_("Suggestion:"), _("none"))
+    if rules.already_in_launcher(path.name):
+        print(_("Note:"), _("already in a fence, the watcher does not ask"))
+    return 0
+
+def check_rules():
+    # Pruefaufruf ohne Dialog: alle installierten Programme, Vorschlag
+    # gegen die heutige Einsortierung.
+    mode, rule_list, notes = rules.load_rules()
+    for note in notes:
+        print(_("Note:"), note)
+
+    groups = rules.get_groups()
+    labels = dict(groups)
+    base = rules.base_directory()
+
+    for target in rules.missing_targets(rule_list, groups):
+        print(_("Rule target without fence:"), target)
+
+    # Wo liegt ein Programm heute? Ueber den Dateinamen oder, bei von Hand
+    # angelegten Verknuepfungen, ueber denselben Programmaufruf.
+    by_file = {}
+    by_exec = {}
+    try:
+        folders = [p for p in base.iterdir() if p.is_dir()]
+    except Exception:
+        folders = []
+    for folder in folders:
+        for item in folder.glob("*.desktop"):
+            by_file.setdefault(item.name, folder.name)
+            info = parse_desktop(item) or {}
+            if info.get("Exec"):
+                by_exec.setdefault(info["Exec"].strip(), folder.name)
+
+    in_fence = hits = 0
+    rows = []
+    for path, data in sorted(
+        get_apps().items(), key=lambda kv: kv[1].get("Name", "").casefold()
+    ):
+        name = Path(path).name
+        now = by_file.get(name) or by_exec.get(data.get("Exec", "").strip())
+        target, reason = rules.suggest(data, name, rule_list, groups)
+        if now in labels:
+            in_fence += 1
+            hits += now == target
+        rows.append((data.get("Name", name), now, target, reason))
+
+    print(_("Mode:"), mode)
+    head_program, head_now, head_suggestion = _("Program"), _("now in"), _("Suggestion")
+    print(f"{head_program[:32]:32} {head_now[:26]:26} {head_suggestion}")
+    for name, now, target, reason in rows:
+        mark = "" if now not in labels or now == target else "  <- " + _("different")
+        print(
+            f"{name[:32]:32} {labels.get(now, now or '-')[:26]:26} "
+            f"{labels.get(target, '-')}"
+            f"{f' ({reason})' if target else ''}{mark}"
+        )
+
+    if in_fence:
+        print(
+            "\n" + _("Hit rate: %(hits)d of %(total)d programs in the fences = %(percent)d %%")
+            % {"hits": hits, "total": in_fence, "percent": 100 * hits // in_fence}
+        )
+    return 0
+
+def usage():
+    return _("""Usage:
+  launcher-watch                    start the watcher (autostart)
+  launcher-watch --baseline         mark today's programs as seen
+  launcher-watch --suggest FILE     show the suggestion for a .desktop file
+  launcher-watch --check            check the suggestions for all programs
+  launcher-watch --write-rules      create rules.json from the example""")
+
+if __name__ == "__main__":
+    if "--baseline" in sys.argv:
+        baseline()
+    elif "--suggest" in sys.argv:
+        position = sys.argv.index("--suggest") + 1
+        if position >= len(sys.argv):
+            print(usage())
+            sys.exit(1)
+        sys.exit(print_suggestion(sys.argv[position]))
+    elif "--check" in sys.argv:
+        sys.exit(check_rules())
+    elif "--write-rules" in sys.argv:
+        if rules.write_default_rules():
+            print(_("Created:"), rules.RULES_FILE)
+        else:
+            print(_("Not overwritten, already exists:"), rules.RULES_FILE)
+    elif len(sys.argv) > 1:
+        print(usage())
+        sys.exit(1)
+    else:
+        run_watcher()

@@ -1,0 +1,398 @@
+# aVinceLaunch-Helfer - translation template
+# Copyright (C) 2026 Angelo Vincenti, aVince Industrietechnik
+# This file is distributed under the same license as aVinceLaunch-Helfer (GPL-3.0-only).
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: aVinceLaunch-Helfer 0.1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#, python-format
+msgid "%(count)d launchers moved to %(fence)s."
+msgstr ""
+
+#, python-format
+msgid "%(key)s is already taken (%(owners)s) – nothing changed."
+msgstr ""
+
+#, python-format
+msgid "%(name)s is already in %(fence)s - not overwritten:"
+msgstr ""
+
+#, python-format
+msgid "%(name)s was sorted into %(fence)s."
+msgstr ""
+
+#, python-format
+msgid "%(name)s: already in %(fence)s, moved from the desktop to the trash"
+msgstr ""
+
+#, python-format
+msgid "Already set up (%(entry)s, %(binding)s) - nothing changed."
+msgstr ""
+
+msgid "Cancelled - nothing changed."
+msgstr ""
+
+msgid "Categories:"
+msgstr ""
+
+msgid "Check only - nothing changed."
+msgstr ""
+
+msgid "Content locked, accepts nothing:"
+msgstr ""
+
+#, python-format
+msgid "Copying failed (%s):"
+msgstr ""
+
+msgid "Created:"
+msgstr ""
+
+msgid "DO NOT SORT IN"
+msgstr ""
+
+msgid "Desktop free: fences and desktop icons hidden."
+msgstr ""
+
+msgid "Desktop restored: fences and desktop icons shown."
+msgstr ""
+
+msgid "File not readable:"
+msgstr ""
+
+#, python-format
+msgid "Files replaced at installation are still kept in %s"
+msgstr ""
+
+msgid "Groups:"
+msgstr ""
+
+#, python-format
+msgid "Hit rate: %(hits)d of %(total)d programs in the fences = %(percent)d %%"
+msgstr ""
+
+msgid "Installed."
+msgstr ""
+
+msgid "Into which fence?"
+msgstr ""
+
+msgid "Later"
+msgstr ""
+
+#, python-format
+msgid "MISSING: %s"
+msgstr ""
+
+msgid "Mode:"
+msgstr ""
+
+#, python-format
+msgid "Move %d launchers into which fence?"
+msgstr ""
+
+#, python-format
+msgid "Move “%s” into which fence?"
+msgstr ""
+
+#, python-format
+msgid ""
+"New Cinnamon desklet found:\n"
+"\n"
+"%s\n"
+"\n"
+"Desklets run directly on the desktop and are not sorted into aVinceLaunch as "
+"a launcher.\n"
+"\n"
+"Open the desklet settings?"
+msgstr ""
+
+msgid "New desklet found"
+msgstr ""
+
+msgid "New program found"
+msgstr ""
+
+msgid ""
+"No group fence found that accepts launchers (content locked everywhere?)."
+msgstr ""
+
+msgid "No own shortcut set up - nothing to do."
+msgstr ""
+
+msgid "No suggestion – please choose a fence."
+msgstr ""
+
+msgid "Not overwritten, already exists:"
+msgstr ""
+
+msgid "Note:"
+msgstr ""
+
+msgid "Open desklet settings"
+msgstr ""
+
+msgid "Please do not run this as root - the helpers belong to your user."
+msgstr ""
+
+msgid ""
+"Please install the missing programs first (e.g. with the Software Manager)."
+msgstr ""
+
+msgid "Program"
+msgstr ""
+
+msgid "Program not found:"
+msgstr ""
+
+msgid "Program:"
+msgstr ""
+
+#, python-format
+msgid "Remove again with: %s"
+msgstr ""
+
+msgid "Removed."
+msgstr ""
+
+#, python-format
+msgid "Replaced files are kept in %s"
+msgstr ""
+
+msgid "Rule target without fence:"
+msgstr ""
+
+#, python-format
+msgid ""
+"Set up the shortcut %s?\n"
+"\n"
+"It hides all fences and the desktop icons and shows them again (like a "
+"double-click on the free desktop)."
+msgstr ""
+
+msgid "Set up the shortcut Super+Shift+D (only if it is free)?"
+msgstr ""
+
+msgid "Several matches:"
+msgstr ""
+
+#, python-format
+msgid "Shortcut %(key)s is taken by: %(owners)s"
+msgstr ""
+
+#, python-format
+msgid "Shortcut %s is free"
+msgstr ""
+
+#, python-format
+msgid "Shortcut %s removed."
+msgstr ""
+
+#, python-format
+msgid "Shortcut %s set up: desktop free."
+msgstr ""
+
+msgid "Suggestion"
+msgstr ""
+
+msgid "Suggestion:"
+msgstr ""
+
+#, python-format
+msgid "Suggestion: %s"
+msgstr ""
+
+msgid "Super+Shift+D"
+msgstr ""
+
+msgid ""
+"Switch on the double-click on the free desktop? X11 only; it listens to "
+"mouse buttons only, never to keys."
+msgstr ""
+
+#, python-format
+msgid "The aVinceLaunch helpers are not installed (no %s)."
+msgstr ""
+
+msgid "The earlier files are back. Log out and in again to start them."
+msgstr ""
+
+msgid ""
+"This is not a launcher and stays on the desktop. Only launchers can be moved "
+"into a fence."
+msgid_plural ""
+"These are not launchers and stay on the desktop. Only launchers can be moved "
+"into a fence."
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "Unknown group:"
+msgstr ""
+
+msgid ""
+"Usage:\n"
+"  launcher-watch                    start the watcher (autostart)\n"
+"  launcher-watch --baseline         mark today's programs as seen\n"
+"  launcher-watch --suggest FILE     show the suggestion for a .desktop file\n"
+"  launcher-watch --check            check the suggestions for all programs\n"
+"  launcher-watch --write-rules      create rules.json from the example"
+msgstr ""
+
+msgid "Usage: avincelaunch-helfer install|uninstall [options]"
+msgstr ""
+
+msgid "Usage: desktop-clean-toggle [--hide | --show | --status]"
+msgstr ""
+
+msgid "Usage: launcher-add \"Program name\" [GROUP]"
+msgstr ""
+
+msgid "Usage: launcher-move FILE.desktop [...] [GROUP]"
+msgstr ""
+
+msgid "Which aVinceLaunch fence should the program go into?"
+msgstr ""
+
+msgid "[Y/n]"
+msgstr ""
+
+msgid "[y/N]"
+msgstr ""
+
+#, python-format
+msgid "aVinceLaunch helpers %s - installation"
+msgstr ""
+
+#, python-format
+msgid "aVinceLaunch helpers %s - removal"
+msgstr ""
+
+msgid "aVinceLaunch: desktop free"
+msgstr ""
+
+msgid "already in a fence, the watcher does not ask"
+msgstr ""
+
+#, python-format
+msgid "category %s"
+msgstr ""
+
+#, python-format
+msgid "command contains “%s”"
+msgstr ""
+
+#, python-format
+msgid "created: %s"
+msgstr ""
+
+msgid "desktop-clean-toggle is missing in ~/.local/bin – nothing changed."
+msgstr ""
+
+msgid "different"
+msgstr ""
+
+#, python-format
+msgid "double-click: %s"
+msgstr ""
+
+#, python-format
+msgid "file name contains “%s”"
+msgstr ""
+
+msgid "gettext (German messages of desktop-clean-toggle)"
+msgstr ""
+
+msgid "kept: your rules, the watcher state, the fences and their folders"
+msgstr ""
+
+#, python-format
+msgid "name contains “%s”"
+msgstr ""
+
+msgid "nemo (the 'Move to a fence' action)"
+msgstr ""
+
+msgid "new"
+msgstr ""
+
+msgid "no"
+msgstr ""
+
+msgid "none"
+msgstr ""
+
+msgid "none found"
+msgstr ""
+
+msgid "not set up"
+msgstr ""
+
+msgid "notify-send (short notices)"
+msgstr ""
+
+msgid "now in"
+msgstr ""
+
+#, python-format
+msgid "optional, missing: %s"
+msgstr ""
+
+msgid "python3-xlib (only for the double-click)"
+msgstr ""
+
+msgid "remove"
+msgstr ""
+
+msgid "replace"
+msgstr ""
+
+msgid "restore"
+msgstr ""
+
+#, python-format
+msgid "set up: %(entry)s '%(name)s' %(binding)s -> %(command)s"
+msgstr ""
+
+#, python-format
+msgid "shortcut Super+Shift+D: %s"
+msgstr ""
+
+msgid "yes"
+msgstr ""
+
+msgid "zenity (dialogs of the watcher and of 'Move to a fence')"
+msgstr ""
+
+#, python-format
+msgid ""
+"“%(name)s” could not be moved:\n"
+"\n"
+"%(error)s"
+msgstr ""
+
+#, python-format
+msgid ""
+"“%(name)s” is already in %(fence)s.\n"
+"\n"
+"Only remove it from the desktop? The launcher goes to the trash."
+msgstr ""
+
+#, python-format
+msgid "“%(name)s” moved to %(fence)s."
+msgstr ""
+
+#, python-format
+msgid "“%s”"
+msgstr ""

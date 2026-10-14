@@ -1,0 +1,23 @@
+{
+  "name": "aVinceLaunch",
+  "version": 1,
+  "colors": {
+    "primary_dark":    { "hex": "#141C22", "rgb": [20, 28, 34],    "hsl": [206, 26, 11] },
+    "primary_green":   { "hex": "#2BBB33", "rgb": [43, 187, 51],   "hsl": [123, 63, 45] },
+    "arrow_light":     { "hex": "#A8F348", "rgb": [168, 243, 72],  "hsl": [85, 87, 62] },
+    "arrow_deep":      { "hex": "#45EE3D", "rgb": [69, 238, 61],   "hsl": [118, 84, 59] },
+    "mint":            { "hex": "#3AC989", "rgb": [58, 201, 137],  "hsl": [153, 55, 51] },
+    "teal":            { "hex": "#2E8F80", "rgb": [46, 143, 128],  "hsl": [171, 51, 37] },
+    "secondary_dark":  { "hex": "#325563", "rgb": [50, 85, 99],    "hsl": [197, 33, 29] },
+    "light_neutral":   { "hex": "#F2F4F5", "rgb": [242, 244, 245], "hsl": [200, 12, 95] },
+    "white":           { "hex": "#FFFFFF", "rgb": [255, 255, 255], "hsl": [0, 0, 100] },
+    "wordmark_dark":   { "hex": "#18242C", "rgb": [24, 36, 44],    "hsl": [204, 29, 13] },
+    "wordmark_light":  { "hex": "#E8EDF0", "rgb": [232, 237, 240], "hsl": [202, 22, 93] }
+  },
+  "gradients": {
+    "plate":  ["#1E272E", "#070F15"],
+    "arrow":  ["#A8F348", "#45EE3D"],
+    "tile_first": ["#9DF157", "#45D071"],
+    "tile_last":  ["#386B72", "#274151"]
+  }
+}

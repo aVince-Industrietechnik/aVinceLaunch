@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "mode": "suggest",
+  "_note": "Example rules matching the starter layout (same sorting as when it is created). \"then\" names the folder of a fence (case does not matter); with a list, the first existing fence wins - English and German folder names of the starter layout. Adapt to your own folders; rules for missing folders are skipped. The first matching rule wins.",
+  "rules": [
+    {
+      "if": {
+        "exec": [
+          "gnome-boxes",
+          "qemu-system-x86_64",
+          "remmina",
+          "virt-manager",
+          "virtualbox",
+          "vmplayer",
+          "vmware"
+        ]
+      },
+      "then": [
+        "System"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Game"
+        ]
+      },
+      "then": [
+        "Games",
+        "Spiele"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Debugger",
+          "Development",
+          "GUIDesigner",
+          "IDE",
+          "Profiling",
+          "RevisionControl",
+          "Translation",
+          "WebDevelopment"
+        ]
+      },
+      "then": [
+        "Development",
+        "Entwicklung"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "2DGraphics",
+          "3DGraphics",
+          "Graphics",
+          "ImageProcessing",
+          "OCR",
+          "Photography",
+          "RasterGraphics",
+          "Scanning",
+          "VectorGraphics"
+        ]
+      },
+      "then": [
+        "Graphics_Photos",
+        "Grafik_Fotos"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Audio",
+          "AudioVideo",
+          "AudioVideoEditing",
+          "DiscBurning",
+          "Midi",
+          "Mixer",
+          "Music",
+          "Player",
+          "Recorder",
+          "Sequencer",
+          "TV",
+          "Tuner",
+          "Video"
+        ]
+      },
+      "then": [
+        "Multimedia"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Chat",
+          "Email",
+          "IRCClient",
+          "InstantMessaging",
+          "Telephony",
+          "VideoConference"
+        ]
+      },
+      "then": [
+        "Communication",
+        "Kommunikation"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Dialup",
+          "Feed",
+          "FileTransfer",
+          "Network",
+          "News",
+          "P2P",
+          "RemoteAccess",
+          "WebApps",
+          "WebBrowser"
+        ]
+      },
+      "then": [
+        "Internet"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Calendar",
+          "Chart",
+          "ContactManagement",
+          "Database",
+          "Dictionary",
+          "Finance",
+          "FlowChart",
+          "Office",
+          "Presentation",
+          "ProjectManagement",
+          "Publishing",
+          "Spreadsheet",
+          "WordProcessor"
+        ]
+      },
+      "then": [
+        "Office",
+        "Buero"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "DesktopSettings",
+          "Emulator",
+          "FileManager",
+          "Filesystem",
+          "HardwareSettings",
+          "Monitor",
+          "PackageManager",
+          "Printing",
+          "Security",
+          "Settings",
+          "System",
+          "TerminalEmulator"
+        ]
+      },
+      "then": [
+        "System"
+      ]
+    },
+    {
+      "if": {
+        "categories": [
+          "Accessibility",
+          "Archiving",
+          "Calculator",
+          "Clock",
+          "Compression",
+          "Education",
+          "Math",
+          "Maths",
+          "Science",
+          "TextEditor",
+          "Utility"
+        ]
+      },
+      "then": [
+        "Tools",
+        "Werkzeuge"
+      ]
+    }
+  ]
+}

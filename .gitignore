@@ -1,0 +1,61 @@
+# =========================================================
+# aVinceLaunch
+#
+# Grundsatz:
+#   Hier lebt nur Quellcode, Dokumentation und Verlauf.
+#   Sicherungen, Archive, Snapshots und rechnerspezifische
+#   Konfigurationen gehoeren nicht ins Repository.
+# =========================================================
+
+# Archive und Sicherungen
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.bak
+*.bak-*
+*.backup
+*~
+
+# Protokolle und Laufzeitdateien
+*.log
+.cache/
+tmp/
+temp/
+
+# Editoren
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+
+# Betriebssystem
+.DS_Store
+Thumbs.db
+
+# Arbeitsablage der Claude-Sitzungen (nicht versionieren)
+Claude outputs/
+
+# ---------------------------------------------------------
+# Rechnerspezifische Cinnamon-Instanzkonfigurationen
+#
+# 4.json bis 10.json enthalten Positionen, Farben und die
+# Reihenfolge der Kacheln dieses einen Rechners. Sie werden
+# auf der NAS gesichert, nicht hier versioniert.
+#
+# Eine anonymisierte Beispielkonfiguration darf spaeter
+# ausdruecklich als Desklet/examples/instance.example.json
+# aufgenommen werden.
+# ---------------------------------------------------------
+[0-9].json
+[0-9][0-9].json
+!Desklet/examples/*.example.json
+
+# Zusatzpaket (scripts/build-helfer-paket.py) und gebaute Uebersetzung
+dist/
+scripts/locale/

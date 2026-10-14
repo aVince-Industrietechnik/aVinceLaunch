@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+"""desktop-doubleclick - double-click on the free desktop toggles
+"desktop free" (aVinceLaunch fences and desktop icons), like Super+Shift+D.
+
+X11 only. Under Wayland no program may watch clicks on the desktop; the
+script exits there at once (replacement: Super+Shift+D).
+
+Schritt 4, V3a (P71, P38, T6):
+  - Listens ONLY to mouse buttons: XInput2 RawButtonPress on the root
+    window via python3-xlib. No key events, no xinput test program, no
+    helper process per click.
+  - Fence areas come from the running desklet
+    ($XDG_RUNTIME_DIR/avincelaunch/fences.json - what really takes clicks,
+    also for automatic size, collapsed fences and scale 2).
+  - Hidden or not is the same marker desktop-clean-toggle and the desklet use
+    ($XDG_STATE_HOME/avincelaunch/schreibtisch-frei) - no second truth.
+"""
+
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+DOUBLECLICK_TIME = 0.45
+DOUBLECLICK_DISTANCE = 12
+# XInput reports some presses twice (master + slave device).
+DUPLICATE_WINDOW = 0.07
+# Free margin around a fence (device pixels).
+FENCE_MARGIN = 5
+
+
+def session_type():
+    kind = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+    if kind:
+        return kind
+    return "wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11"
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(Path.home(), ".local/state")
+    return Path(base) / "avincelaunch"
+
+
+def runtime_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join("/run/user", str(os.getuid()))
+    return Path(base) / "avincelaunch"
+
+
+MARKER = state_dir() / "schreibtisch-frei"
+FENCES_FILE = runtime_dir() / "fences.json"
+TOGGLE = Path(__file__).resolve().parent / "desktop-clean-toggle"
+
+
+def desktop_free(marker=MARKER):
+    return marker.exists()
+
+
+def fence_rectangles(path=FENCES_FILE, margin=FENCE_MARGIN):
+    """Visible fence areas as (x1, y1, x2, y2); [] if the file is missing
+    or unreadable (then nothing is blocked by fences)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        fences = data.get("fences", {}) if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return []
+    rects = []
+    for rect in fences.values():
+        try:
+            if not rect.get("visible"):
+                continue
+            x, y, w, h = (int(rect[k]) for k in ("x", "y", "w", "h"))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if w > 0 and h > 0:
+            rects.append((x - margin, y - margin, x + w + margin, y + h + margin))
+    return rects
+
+
+def inside(x, y, rect):
+    x1, y1, x2, y2 = rect
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+
+def icon_rectangles(desktop_dir, origin, scale):
+    """Areas of the Nemo desktop icons (position from Nemo's metadata;
+    icon plus label, grown with the UI scale)."""
+    rects = []
+    try:
+        from gi.repository import Gio
+    except ImportError:
+        return rects
+    ox, oy = origin
+    try:
+        entries = list(Path(desktop_dir).iterdir())
+    except OSError:
+        return rects
+    for entry in entries:
+        try:
+            info = Gio.File.new_for_path(str(entry)).query_info(
+                "metadata::nemo-icon-position", Gio.FileQueryInfoFlags.NONE, None)
+            value = info.get_attribute_string("metadata::nemo-icon-position")
+            px, py = (int(v) for v in value.split(","))
+        except Exception:
+            continue
+        x, y = ox + px, oy + py
+        rects.append((x - 45 * scale, y - 10 * scale, x + 115 * scale, y + 95 * scale))
+    return rects
+
+
+def decide(x, y, on_desktop_window, no_window, free, fence_rects, icon_rects):
+    """True if a double-click at (x, y) may toggle.
+    Shown: only on the bare desktop - never on a fence or a desktop icon.
+    Free: fences and icons are hidden anyway; the desktop or the empty root
+    brings them back."""
+    if free:
+        return no_window or on_desktop_window
+    if any(inside(x, y, r) for r in fence_rects):
+        return False
+    if any(inside(x, y, r) for r in icon_rects):
+        return False
+    return on_desktop_window
+
+
+class ClickTracker:
+    """Detects a double-click of the left button from press times/places."""
+
+    def __init__(self, interval=DOUBLECLICK_TIME, distance=DOUBLECLICK_DISTANCE):
+        self.interval = interval
+        self.distance = distance
+        self.last = None
+        self.last_physical = -1.0
+
+    def press(self, now, x, y):
+        if now - self.last_physical < DUPLICATE_WINDOW:
+            return False
+        self.last_physical = now
+        last = self.last
+        if (last is not None and now - last[0] <= self.interval
+                and abs(x - last[1]) <= self.distance and abs(y - last[2]) <= self.distance):
+            self.last = None
+            return True
+        self.last = (now, x, y)
+        return False
+
+
+# --- X11 ---------------------------------------------------------------------
+
+def desktop_dir():
+    try:
+        return subprocess.check_output(["xdg-user-dir", "DESKTOP"], text=True,
+                                       stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return str(Path.home() / "Desktop")
+
+
+def primary_origin_and_scale():
+    """Device-pixel origin of the primary monitor (Nemo shows its icons
+    there) and the UI scale."""
+    try:
+        import gi
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk
+        display = Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        scale = monitor.get_scale_factor()
+        geometry = monitor.get_geometry()
+        return (geometry.x * scale, geometry.y * scale), scale
+    except Exception:
+        return (0, 0), 1
+
+
+def raw_button_struct():
+    """python3-xlib (0.33) leaves XInput2 raw events unparsed; this is the
+    start of xXIRawEvent: device, time, button number."""
+    from Xlib.protocol import rq
+    return rq.Struct(rq.Card16("deviceid"), rq.Card32("time"), rq.Card32("detail"))
+
+
+def is_raw_button_press(event, opcode):
+    """A XInput2 RawButtonPress of the extension with this opcode
+    (python3-xlib: the generic event code lives in Xlib.ext.ge)."""
+    from Xlib.ext import ge, xinput
+    return (getattr(event, "type", None) == ge.GenericEventCode
+            and getattr(event, "extension", None) == opcode
+            and getattr(event, "evtype", None) == xinput.RawButtonPress)
+
+
+class X11:
+    def __init__(self):
+        from Xlib import X, display
+        from Xlib.ext import xinput
+        self.X = X
+        self.xinput = xinput
+        self.display = display.Display()
+        if not self.display.has_extension("XInputExtension"):
+            raise RuntimeError("XInput2 not available")
+        self.root = self.display.screen().root
+        self.opcode = self.display.query_extension("XInputExtension").major_opcode
+        # Only mouse buttons - nothing else is ever delivered (P71).
+        self.display.ge_add_event_data(self.opcode, xinput.RawButtonPress, raw_button_struct())
+        self.root.xinput_select_events([
+            (xinput.AllMasterDevices, xinput.RawButtonPressMask),
+        ])
+        self.atom_type = self.display.intern_atom("_NET_WM_WINDOW_TYPE")
+        self.atom_desktop = self.display.intern_atom("_NET_WM_WINDOW_TYPE_DESKTOP")
+
+    def presses(self):
+        """Yields the button number of every press, forever."""
+        while True:
+            event = self.display.next_event()
+            if is_raw_button_press(event, self.opcode):
+                yield event.data.detail
+
+    def pointer(self):
+        reply = self.root.query_pointer()
+        return reply.root_x, reply.root_y
+
+    def window_chain(self):
+        """Windows under the pointer, from the top level down."""
+        chain = []
+        window = self.root
+        for _ in range(8):
+            child = window.query_pointer().child
+            if not child:
+                break
+            chain.append(child)
+            window = child
+        return chain
+
+    def _is_desktop(self, window):
+        try:
+            wm_class = window.get_wm_class() or ()
+            prop = window.get_full_property(self.atom_type, self.X.AnyPropertyType)
+            types = list(prop.value) if prop else []
+        except Exception:
+            return False
+        return "nemo-desktop" in [c.lower() for c in wm_class] and self.atom_desktop in types
+
+    def under_pointer(self):
+        """(on the Nemo desktop window, no window at all)."""
+        chain = self.window_chain()
+        return any(self._is_desktop(w) for w in chain), not chain
+
+
+def toggle():
+    subprocess.Popen([str(TOGGLE)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def main():
+    if session_type() != "x11":
+        print("desktop-doubleclick: session '%s' - X11 only, exiting. "
+              "Use Super+Shift+D instead (desktop-clean-shortcut)." % session_type(),
+              file=sys.stderr)
+        return 0
+    lock_dir = state_dir()
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock = open(lock_dir / "desktop-doubleclick.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return 0
+    if not TOGGLE.exists():
+        print("desktop-doubleclick: desktop-clean-toggle not found next to this script",
+              file=sys.stderr)
+        return 1
+    try:
+        x11 = X11()
+    except Exception as error:
+        print("desktop-doubleclick: cannot listen to mouse buttons (%s). "
+              "Is python3-xlib installed?" % error, file=sys.stderr)
+        return 1
+    tracker = ClickTracker()
+    for button in x11.presses():
+        if button != 1:
+            continue
+        x, y = x11.pointer()
+        if not tracker.press(time.monotonic(), x, y):
+            continue
+        free = desktop_free()
+        on_desktop, no_window = x11.under_pointer()
+        if not (on_desktop or (free and no_window)):
+            continue
+        icons = []
+        if not free:
+            origin, scale = primary_origin_and_scale()
+            icons = icon_rectangles(desktop_dir(), origin, scale)
+        if decide(x, y, on_desktop, no_window, free, fence_rectangles(), icons):
+            toggle()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

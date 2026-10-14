@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
+
+from pathlib import Path
+import subprocess
+import sys
+
+# Keine __pycache__-Ordner in ~/.local/bin anlegen.
+sys.dont_write_bytecode = True
+
+# Gruppen und Basisordner kommen aus EINER Stelle (AP11).
+import avincelaunch_rules as rules
+from avincelaunch_rules import _
+
+HOME = Path.home()
+
+# Pruefung Phase 2, B14: dieselben Programmordner wie der Waechter.
+APPDIRS = rules.app_dirs()
+
+# [(Ordner, Anzeigename)] der Fences auf dem Schreibtisch.
+# P24: Fences mit gesperrtem Inhalt (AP18-4) nehmen nichts an.
+ALL_GROUPS = dict(rules.get_groups())
+GROUPS = dict(rules.get_groups(include_locked=False))
+
+def find_app(search):
+    search = search.casefold()
+    matches = []
+
+    for directory in APPDIRS:
+        if not directory.exists():
+            continue
+
+        for path in directory.glob(
+            "*.desktop"
+        ):
+            # V5f / N30: auch der uebersetzte Name (Name[de]), den
+            # Startmenue und Fences zeigen.
+            name, names = rules.desktop_names(path)
+
+            if (
+                any(search in n.casefold() for n in names)
+                or search in path.stem.casefold()
+            ):
+                matches.append(
+                    (name, path, names)
+                )
+
+    return matches
+
+def ask_group():
+    args = [
+        "zenity",
+        "--list",
+        "--radiolist",
+        "--title=aVinceLaunch",
+        "--text=<span size='large' weight='bold'>" + _("Into which fence?") + "</span>",
+        "--width=550",
+        "--height=500",
+        "--column=",
+        "--column=Fence",
+    ]
+
+    first = True
+
+    for key, label in GROUPS.items():
+        args += [
+            "TRUE" if first else "FALSE",
+            label,
+        ]
+        first = False
+
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        return None
+
+    selected = result.stdout.strip()
+
+    for key, label in GROUPS.items():
+        if selected == label:
+            return key
+
+    return None
+
+if len(sys.argv) < 2:
+    print(_('Usage: launcher-add "Program name" [GROUP]'))
+    print(_("Groups:"), ", ".join(GROUPS) or _("none found"))
+    sys.exit(1)
+
+search = sys.argv[1]
+
+matches = find_app(search)
+
+if not matches:
+    print(_("Program not found:"), search)
+    sys.exit(1)
+
+exact = [
+    item for item in matches
+    if any(n.casefold() == search.casefold() for n in item[2])
+]
+
+if exact:
+    name, source = exact[0][:2]
+
+elif len(matches) == 1:
+    name, source = matches[0][:2]
+
+else:
+    print(_("Several matches:"))
+    for name, path, _names in matches:
+        print(name, "->", path)
+
+    sys.exit(1)
+
+if len(sys.argv) >= 3:
+    group = rules.find_group(sys.argv[2], GROUPS.items())
+
+    if group is None and rules.find_group(sys.argv[2], ALL_GROUPS.items()):
+        print(_("Content locked, accepts nothing:"), sys.argv[2])
+        sys.exit(1)
+
+    if group is None:
+        print(_("Unknown group:"), sys.argv[2])
+        print(_("Groups:"), ", ".join(GROUPS) or _("none found"))
+        sys.exit(1)
+
+else:
+    group = ask_group()
+
+    if group is None:
+        sys.exit(0)
+
+target_dir = rules.base_directory() / group
+
+# P23: nie ueberschreiben (wie launcher-move) - eine angepasste Kopie im
+# Gruppenordner (Name, Symbol, Parameter) bliebe sonst nicht erhalten.
+# Pruefung Phase 3 Teil 2 (T3): ueber rules.install_desktop_file - auch nie
+# eine halbe Datei (bei voller Platte oder Abbruch blieb sie liegen, und jeder
+# weitere Versuch meldete "schon vorhanden"); ein toter Verweis gleichen
+# Namens zaehlt als vorhanden.
+target, problem = rules.install_desktop_file(source, target_dir)
+if problem == "exists":
+    print(_("%(name)s is already in %(fence)s - not overwritten:")
+          % {"name": name, "fence": GROUPS[group]}, target_dir / source.name)
+    sys.exit(1)
+if target is None:
+    print(_("Copying failed (%s):") % problem, target_dir / source.name)
+    sys.exit(1)
+
+print(
+    f"{name} -> {GROUPS[group]}"
+)
