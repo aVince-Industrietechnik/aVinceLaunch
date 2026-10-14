@@ -5,7 +5,7 @@ All notable changes to aVinceLaunch. Newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] – unreleased
+## [0.1.0] – 2026-10-14
 
 First public version. aVinceLaunch is a fork of *TheLauncher 1.0.3* by MHK924
 (see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)) with a new UUID,

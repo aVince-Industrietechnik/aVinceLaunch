@@ -17,9 +17,11 @@ aVinceLaunch turns ordinary directories into tidy groups on your desktop —
 applications, documents and folders, each group a panel you place where you
 want it. It is built for one job and stays out of everything else.
 
-> **Status: version 0.1.0, not yet published.** The desklet has been in daily
-> use on Linux Mint 22.3 with Cinnamon 6.6.9 since September 2026, currently
-> with nine fences. It is a fork of *TheLauncher 1.0.3* by MHK924 — see
+> **Status: version 0.1.0, published on 14 October 2026** – see the
+> [release](https://github.com/aVince-Industrietechnik/aVinceLaunch/releases/tag/v0.1.0).
+> The desklet has been in daily use on Linux Mint 22.3 with Cinnamon 6.6.9
+> since September 2026, currently with nine fences. It is a fork of
+> *TheLauncher 1.0.3* by MHK924 — see
 > [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). It has its own UUID and can
 > be installed next to TheLauncher; existing TheLauncher groups and their order
 > are read, never changed.

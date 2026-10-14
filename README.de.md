@@ -18,12 +18,14 @@ Schreibtisch – Programme, Dokumente und Ordner, jede Gruppe eine Fläche, die
 dort liegt, wo Du sie hinlegst. Das Programm macht eine Sache und hält sich aus
 allem anderen heraus.
 
-> **Stand: Version 0.1.0, noch nicht veröffentlicht.** Das Desklet wird seit
-> September 2026 unter Linux Mint 22.3 mit Cinnamon 6.6.9 täglich benutzt,
-> derzeit mit neun Fences. Es ist ein Fork von *TheLauncher 1.0.3* von MHK924,
-> siehe [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Es hat eine eigene
-> UUID und lässt sich neben TheLauncher installieren; vorhandene
-> TheLauncher-Gruppen und ihre Reihenfolge werden gelesen, nie verändert.
+> **Stand: Version 0.1.0, veröffentlicht am 14. Oktober 2026** – siehe
+> [Release](https://github.com/aVince-Industrietechnik/aVinceLaunch/releases/tag/v0.1.0).
+> Das Desklet wird seit September 2026 unter Linux Mint 22.3 mit Cinnamon 6.6.9
+> täglich benutzt, derzeit mit neun Fences. Es ist ein Fork von *TheLauncher
+> 1.0.3* von MHK924, siehe [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Es
+> hat eine eigene UUID und lässt sich neben TheLauncher installieren;
+> vorhandene TheLauncher-Gruppen und ihre Reihenfolge werden gelesen, nie
+> verändert.
 
 ## Was es kann
 
