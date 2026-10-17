@@ -111,8 +111,10 @@ check("Start: Ordner anlegen direkt vor _applyStoragePath(false), lokal", start 
 check("drei Aufrufer (Start, Menue, Netz nach Antwort)", (src.match(/this\._ensureOwnFolder\(/g) || []).length, 3);
 const netz = src.indexOf("_onLinkScanResult: function(");
 const netzEnde = src.indexOf("\n    },", netz);
-check("Netz: anlegen nur bei 'missing' des eigenen Ordners, einmal",
-    /!this\._linkOwnFolderChecked && result\.error !== "timeout"[\s\S]{0,400}if \(result\.error === "missing"\) \{\s*const ensured = this\._ensureOwnFolder\("Start"\);/
+// Seit dem Async-Umbau lesen auch lokale Fences ueber _onLinkScanResult -
+// angelegt wird dort weiter nur im Netz-Modus (lokal: beim Start).
+check("Netz: anlegen nur bei 'missing' des eigenen Ordners, einmal, nur im Netz-Modus",
+    /this\._linkIsNetwork && job\.path === this\._rootPath && !this\._linkOwnFolderChecked\s*&& result\.error !== "timeout"[\s\S]{0,400}if \(result\.error === "missing"\) \{\s*const ensured = this\._ensureOwnFolder\("Start"\);/
         .test(src.substring(netz, netzEnde)), true);
 check("Menue: Verknuepfungsordner oeffnen legt an", src.indexOf('this._ensureOwnFolder("Menue")') > 0, true);
 const menu = src.indexOf('this._ensureOwnFolder("Menue")');

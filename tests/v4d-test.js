@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Angelo Vincenti, aVince Industrietechnik
 
 // Schritt 4, V4d - Link-Ordner auf einem Netzlaufwerk asynchron lesen.
-//  A. lib/portalScanner.js scanLinkDirectoryAsync liefert fuer denselben
-//     Ordner dasselbe wie linkScanner.scanDirectory (Reihenfolge-Datei,
-//     Anpinnen, Ausblenden, Stile, Verweise, versteckte und defekte Eintraege,
-//     alle Sortierarten), auch ueber mehrere Stapel; schreibt nichts.
-//  B. Fehler (fehlt, Datei statt Ordner, nicht lesbar) wie scanDirectory;
-//     abgebrochen = kein Ergebnis.
+//  A. lib/linkScanner.js scanDirectoryAsync (seit dem Async-Umbau der
+//     einzige Weg, lokal wie im Netz) liefert Reihenfolge-Datei, Anpinnen,
+//     Ausblenden, Stile, Verweise, versteckte und defekte Eintraege richtig,
+//     auch ueber mehrere Stapel; schreibt ohne persistOrder nichts.
+//  B. Fehler (fehlt, Datei statt Ordner, nicht lesbar); abgebrochen = kein
+//     Ergebnis.
 //  C. desklet.js im Netz-Modus (Methoden aus dem Quelltext, Umgebung
 //     nachgebaut): beim Einrichten kein synchroner Zugriff auf den Ordner
 //     (keine Pruefung, kein Anlegen, keine Dialogliste, kein Ordnerwaechter);
@@ -16,7 +16,8 @@
 //     Dialogliste kommt aus dem ersten Ergebnis; Nachsehen baut nur bei
 //     Aenderung neu auf; "nicht erreichbar" nach der Zeitgrenze, danach
 //     Nachsehen alle 60 s; Klick auf einen Ordner liest nicht synchron.
-//     Lokal bleibt der bisherige Weg.
+//     Lokal: Ordner pruefen, Waechter und Dialogliste wie bisher, die Anzeige
+//     liest aber ebenfalls asynchron ueber das ScanGate.
 // Aufruf im Repository-Wurzelverzeichnis:  cjs tests/v4d-test.js
 
 const Gio = imports.gi.Gio;
@@ -32,7 +33,8 @@ if (typeof globalThis.global === "undefined") {
     globalThis.global = { log() {}, logError() {} };
 }
 const L = imports.desklets[UUID].lib;
-const { scanLinkDirectoryAsync, ScanGate } = L.portalScanner;
+const { ScanGate } = L.portalScanner;
+const { scanDirectoryAsync } = L.linkScanner;
 
 let failures = 0;
 let checks = 0;
@@ -58,7 +60,7 @@ function runLoop(ms) {
 function scanAsync(path, options) {
     let result = null;
     const loop = new GLib.MainLoop(null, false);
-    scanLinkDirectoryAsync(path, options, r => { result = r; loop.quit(); });
+    scanDirectoryAsync(path, options, r => { result = r; loop.quit(); });
     const guard = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5000, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
     loop.run();
     if (result) {
@@ -113,24 +115,17 @@ GLib.file_set_contents(D + "/.avincelaunch.json", JSON.stringify({
 }));
 
 // --- A. gleiches Ergebnis -----------------------------------------------------
-print("A. asynchron = synchron:");
+print("A. asynchron einlesen:");
 const readText = path => new TextDecoder().decode(GLib.file_get_contents(path)[1]);
 const sidecarBefore = readText(D + "/.avincelaunch.json");
-let allSame = true;
-const modes = ["manual", "name-asc", "name-desc", "type", "modified", "added"];
-const folderSorts = ["mixed", "folders-first", "folders-last"];
-for (const sortMode of modes) {
-    for (const folderSort of folderSorts) {
-        const options = { persistOrder: false, sortMode: sortMode, folderSort: folderSort };
-        const a = plain(scanAsync(D, options));
-        const s = plain(L.linkScanner.scanDirectory(D, options));
-        if (JSON.stringify(a) !== JSON.stringify(s)) {
-            allSame = false;
-            check("gleich: " + sortMode + "/" + folderSort, a, s);
-        }
-    }
-}
-check("alle 18 Sortierarten gleich", allSame, true);
+const byMode = mode => plain(scanAsync(D, { persistOrder: false, sortMode: mode, folderSort: "mixed" }))
+    .items.map(i => i[0]);
+check("Name A-Z (Angepinnte vorn)", byMode("name-asc"),
+    ["document:notiz.txt", "app:a.desktop", "app:b.desktop", "app:verweis.desktop", "folder:Ordner",
+     "app:versteckt.desktop", "folder:Zielordner"]);
+check("Typ (Angepinnte vorn)", byMode("type"),
+    ["document:notiz.txt", "folder:Ordner", "folder:Zielordner", "app:a.desktop", "app:b.desktop",
+     "app:verweis.desktop", "app:versteckt.desktop"]);
 const manual = plain(scanAsync(D, { persistOrder: false }));
 // Angepinnt vorn, dann gespeicherte Reihenfolge, Rest nach Namen (Charlie,
 // Versteckt, Zielordner); ohne .unsichtbar, defekten Verweis, .desktop ohne Exec.
@@ -156,18 +151,14 @@ for (let i = 0; i < 150; i++) {
     GLib.file_set_contents(M + "/datei-" + String(i).padStart(3, "0") + ".txt", "x");
 }
 const many = plain(scanAsync(M, { persistOrder: false, sortMode: "name-asc" }));
-check("150 Eintraege (3 Stapel) vollstaendig und gleich",
-    [many.items.length, JSON.stringify(many) === JSON.stringify(plain(L.linkScanner.scanDirectory(M,
-        { persistOrder: false, sortMode: "name-asc" })))], [150, true]);
+check("150 Eintraege (3 Stapel) vollstaendig, sortiert",
+    [many.items.length, many.items[0][0], many.items[149][0]],
+    [150, "document:datei-000.txt", "document:datei-149.txt"]);
 
 // --- B. Fehler und Abbrechen --------------------------------------------------
 print("B. Fehler und Abbrechen:");
-check("fehlt -> missing (wie synchron)",
-    [scanAsync(root + "/gibt-es-nicht", {}).error, L.linkScanner.scanDirectory(root + "/gibt-es-nicht", { persistOrder: false }).error],
-    ["missing", "missing"]);
-check("Datei statt Ordner -> missing (wie synchron)",
-    [scanAsync(D + "/notiz.txt", {}).error, L.linkScanner.scanDirectory(D + "/notiz.txt", { persistOrder: false }).error],
-    ["missing", "missing"]);
+check("fehlt -> missing", scanAsync(root + "/gibt-es-nicht", {}).error, "missing");
+check("Datei statt Ordner -> missing", scanAsync(D + "/notiz.txt", {}).error, "missing");
 const U = root + "/gesperrt";
 GLib.mkdir_with_parents(U, 0o755);
 GLib.spawn_command_line_sync("chmod 000 " + GLib.shell_quote(U));
@@ -179,7 +170,7 @@ if (!canRead) {
 }
 GLib.spawn_command_line_sync("chmod 755 " + GLib.shell_quote(U));
 let cancelledResult = "keins";
-const cancellable = scanLinkDirectoryAsync(D, {}, r => { cancelledResult = r; });
+const cancellable = scanDirectoryAsync(D, {}, r => { cancelledResult = r; });
 cancellable.cancel();
 runLoop(300);
 check("abgebrochen: kein Ergebnis", cancelledResult, "keins");
@@ -226,10 +217,16 @@ const deps = {
     getResolvedPath: () => netPaths.length ? NET_ROOT : LOCAL_ROOT,
     unregisterReadOnlyRoot: () => {},
     ensureLinkDirectory: () => { calls.push("ensureLinkDirectory"); return LOCAL_ROOT; },
-    scanLinkDirectoryAsync: (path, options, done) => {
+    scanDirectoryAsync: (path, options, done) => {
         scans.push({ path: path, options: options, done: done });
         return { cancel() {} };
-    }
+    },
+    Mainloop: {
+        timeout_add: (ms, fn) => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, fn),
+        source_remove: id => GLib.source_remove(id)
+    },
+    LOADING_HINT_DELAY_MS: 50,
+    Gio: Gio
 };
 function makeFence() {
     const f = {
@@ -246,7 +243,7 @@ function makeFence() {
         _cancelPortalScan() {},
         _stopPortalPoll() {},
         _isDirectoryPath(p) { calls.push("SYNC _isDirectoryPath " + p); return true; },
-        _syncOrderListFromDirectory() { calls.push("SYNC _syncOrderListFromDirectory"); },
+        _syncOrderListFromDirectory() { calls.push("_syncOrderListFromDirectory (asynchron)"); },
         _setOrderBrowsePath(p) { calls.push("SYNC _setOrderBrowsePath " + p); },
         _restartFileMonitor() { calls.push("_restartFileMonitor"); },
         _stopFileMonitor() { calls.push("_stopFileMonitor"); },
@@ -260,11 +257,14 @@ function makeFence() {
         _applyOrderListScan(p, r) { calls.push("_applyOrderListScan " + p + " " + (r.manualItems || []).length); },
         _updateOrderNavState() { calls.push("_updateOrderNavState"); },
         _isFenceVisible: () => true,
-        _ensureState: "angelegt"
+        _ensureState: "angelegt",
+        _ioCancellable: new Gio.Cancellable(),
+        _orderGate: { cancel() { calls.push("_orderGate.cancel"); } }
     };
-    ["_applyStoragePath", "_applyNetworkLinkPath", "_refresh", "_refreshNetworkLink", "_startLinkScan",
+    ["_applyStoragePath", "_applyNetworkLinkPath", "_refresh", "_refreshLink", "_startLinkScan",
      "_onLinkScanResult", "_linkResultSignature", "_cancelLinkScan", "_stopLinkPoll", "_armLinkPoll",
-     "_getCurrentPath", "_getCurrentSidecar"].forEach(n => { f[n] = method(n, deps); });
+     "_getCurrentPath", "_getCurrentSidecar", "_showLoadingHintLater", "_cancelLoadingHint",
+     "_cancelOrderScans"].forEach(n => { f[n] = method(n, deps); });
     f._linkGate = new ScanGate((job, done) => f._startLinkScan(job, done),
         (job, result, superseded) => f._onLinkScanResult(job, result, superseded),
         { timeoutMs: 150, timeoutResult: () => ({ items: [], manualItems: [], error: "timeout" }) });
@@ -290,7 +290,9 @@ calls.length = 0;
 f._refresh();
 check("Netz: _refresh startet genau ein asynchrones Einlesen, nichts synchron",
     [scans.length, scans[0].path, scans[0].options.persistOrder, syncCalls()], [1, NET_ROOT, false, []]);
-check("Netz: erster Hinweis 'Loading…'", calls.indexOf("_buildMessage Loading…") >= 0, true);
+check("Netz: 'Loading…' nicht sofort", calls.indexOf("_buildMessage Loading…") >= 0, false);
+runLoop(120);
+check("Netz: erster Hinweis 'Loading…', wenn es dauert", calls.indexOf("_buildMessage Loading…") >= 0, true);
 f._refresh();
 check("Netz: zweites _refresh waehrend des Einlesens startet nichts", scans.length, 1);
 
@@ -313,20 +315,20 @@ check("Netz: weiterhin nichts synchron", syncCalls(), []);
 
 // C4 Nachsehen: unveraendert -> kein Neuaufbau; geaendert -> Neuaufbau
 calls.length = 0;
-f._refreshNetworkLink(true);
+f._refreshLink(true);
 last().done(ok(["app:a", "app:b"]));
 check("Nachsehen unveraendert: kein Neuaufbau, keine zweite Dialogliste",
     calls.filter(c => c.indexOf("_buildUI") === 0 || c.indexOf("_applyOrderListScan") === 0), []);
 calls.length = 0;
-f._refreshNetworkLink(true);
+f._refreshLink(true);
 last().done(ok(["app:a", "app:b"], { pinned: true }));
 check("Nachsehen mit geaenderter Nadel: Neuaufbau", calls.filter(c => c.indexOf("_buildUI") === 0), ["_buildUI app:a,app:b"]);
 calls.length = 0;
-f._refreshNetworkLink(false);
+f._refreshLink(false);
 last().done(ok(["app:a", "app:b"], { pinned: true }));
 check("ausdrueckliches _refresh baut immer neu auf", calls.filter(c => c.indexOf("_buildUI") === 0).length, 1);
 calls.length = 0;
-f._refreshNetworkLink(false);
+f._refreshLink(false);
 last().done({ items: [], manualItems: [], error: "missing" });
 check("fehlt spaeter wieder: nicht noch einmal angelegt, Meldung",
     [calls.filter(c => c.indexOf("_ensureOwnFolder") === 0), calls.filter(c => c.indexOf("_buildUI") === 0)],
@@ -341,7 +343,7 @@ check("Klick: Klickart aus dem letzten Ergebnis, ohne synchrones Lesen",
 // C6 Zeitgrenze: haengt -> "nicht erreichbar", Nachsehen 60 s
 f._stopLinkPoll();
 calls.length = 0;
-f._refreshNetworkLink(false);
+f._refreshLink(false);
 const hung = scans.length;
 runLoop(400);
 check("haengt: nach der Zeitgrenze 'timeout' angezeigt", calls.filter(c => c.indexOf("_buildUI") === 0), ["_buildUI timeout"]);
@@ -350,24 +352,38 @@ check("haengt: Nachsehen geplant (60 s)", f._linkPollId > 0, true);
 f._stopLinkPoll();
 f._cancelLinkScan();
 
-// C7 Lokal: bisheriger Weg
+// C7 Lokal: Ordner pruefen, Waechter, Dialogliste wie bisher; Anzeige
+// asynchron ueber das ScanGate, ohne Nachsehen.
 netPaths = [];
 f = makeFence();
 calls.length = 0;
 f._applyStoragePath(false);
-check("lokal: wie bisher (Pruefung, Ordner fuer den Dialog, Waechter, Dialogliste)",
+check("lokal: Pruefung, Ordner fuer den Dialog, Waechter, Dialogliste (asynchron)",
     [f._linkIsNetwork, calls.indexOf("SYNC _isDirectoryPath " + LOCAL_ROOT) >= 0,
      calls.indexOf("SYNC _setOrderBrowsePath " + LOCAL_ROOT) >= 0, calls.indexOf("_restartFileMonitor") >= 0,
-     calls.indexOf("SYNC _syncOrderListFromDirectory") >= 0],
+     calls.indexOf("_syncOrderListFromDirectory (asynchron)") >= 0],
     [false, true, true, true, true]);
-check("lokal: kein asynchrones Einlesen", (() => { const n = scans.length; f._getCurrentSidecar(); return scans.length - n; })(), 0);
+check("Ordnerwechsel bricht laufende Abfragen ab (Dialogliste, Menue)",
+    [calls.indexOf("_orderGate.cancel") >= 0, f._ioCancellable.is_cancelled()], [true, false]);
+calls.length = 0;
+const before = scans.length;
+f._refresh();
+check("lokal: _refresh liest asynchron ueber das ScanGate", [scans.length - before, last().path, syncCalls()],
+    [1, LOCAL_ROOT, []]);
+calls.length = 0;
+last().done(ok(["app:l"]));
+check("lokal: Anzeige aufgebaut, kein Nachsehen (Ordnerwaechter genuegt)",
+    [calls.filter(c => c.indexOf("_buildUI") === 0), f._linkPollId || 0], [["_buildUI app:l"], 0]);
+check("lokal: Klickart aus dem letzten Ergebnis, ohne Lesen",
+    (() => { const n = scans.length; const mode = f._getCurrentSidecar().folderClickMode; return [mode, scans.length - n, syncCalls()]; })(),
+    ["open-file-manager", 0, []]);
 
 // C8 Quelltext: Start, Ordnerwaechter, Fehleranzeige, Python -B
 check("Start: eigener Ordner nur lokal synchron angelegt",
     /if \(!this\._isPortal\(\) && !isNetworkPath\(getResolvedPath\(this\.subdirectory\)\)\) \{\s*this\._ensureOwnFolder\("Start"\);/.test(source), true);
 check("kein Ordnerwaechter im Netz", /if \(!this\._isPortal\(\) && this\._linkIsNetwork\) \{[^}]*return;/.test(methodSource("_restartFileMonitor")), true);
-check("Fehleranzeige: Netz meldet 'unreadable'/'timeout' wie das Portal",
-    /\(this\._isPortal\(\) \|\| this\._linkIsNetwork\)\s*&& \(scanResult\.error === "unreadable" \|\| scanResult\.error === "timeout"\)/.test(source), true);
+check("Fehleranzeige: Netz meldet 'unreadable' wie das Portal, 'timeout' jeder Fence",
+    /scanResult\.error === "missing" \|\| scanResult\.error === "timeout"\s*\|\| \(\(this\._isPortal\(\) \|\| this\._linkIsNetwork\) && scanResult\.error === "unreadable"\)/.test(source), true);
 check("Abbau bricht auch das Netz-Einlesen ab",
     /this\._cancelLinkScan\(\);\s*this\._stopLinkPoll\(\);/.test(methodSource("_stopBackgroundWork")), true);
 check("eigene Dialoge mit python3 -B", (source.match(/\["python3", "-B", /g) || []).length, 2);
