@@ -5,7 +5,7 @@
 # Prueft A4-4 (Pruefung Phase 2: P34, P36, P59, P60) ohne Cinnamon in einem
 # Wegwerfordner:
 #   P36  Dialog (orderFolderEditor.scan_directory) und Fence
-#        (lib/linkScanner.js, per cjs) lesen denselben Ordner gleich;
+#        (lib/linkScanner.js scanDirectoryAsync, per cjs) lesen denselben Ordner gleich;
 #   P34  Navigieren in schreibgeschuetzte / fehlende Ordner ohne Abbruch;
 #   P59  Meldung an den Fence faengt D-Bus-Fehler ab (absichtlich ungueltiger
 #        Bus - das laufende Cinnamon wird NIE angesprochen);
@@ -103,7 +103,11 @@ script = os.path.join(WORK, "scan.js")
 write(script, """
 imports.searchPath.unshift(%s);
 const L = imports.desklets["avincelaunch-desklet@avince"].lib.linkScanner;
-const r = L.scanDirectory(%s, { persistOrder: false });
+const GLib = imports.gi.GLib;
+const loop = new GLib.MainLoop(null, false);
+let r = null;
+L.scanDirectoryAsync(%s, { persistOrder: false }, result => { r = result; loop.quit(); });
+loop.run();
 print(JSON.stringify(r.manualItems.map(i => [i.id, i.name])));
 """ % (json.dumps(shim), json.dumps(group)))
 run = subprocess.run(["cjs", script], capture_output=True, text=True, timeout=60)

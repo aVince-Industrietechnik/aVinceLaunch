@@ -61,7 +61,17 @@ GLib.file_set_contents(D + "/.avincelaunch.json", JSON.stringify({
     zukunft: { feld: 1 }
 }));
 
-const scan = mode => L.linkScanner.scanDirectory(D, { persistOrder: false, sortMode: mode, folderSort: "mixed" });
+// Asynchron einlesen und auf das Ergebnis warten.
+const scan = mode => {
+    let result = null;
+    const loop = new GLib.MainLoop(null, false);
+    L.linkScanner.scanDirectoryAsync(D, { persistOrder: false, sortMode: mode, folderSort: "mixed" }, r => {
+        result = r;
+        loop.quit();
+    });
+    loop.run();
+    return result;
+};
 
 print("Sortierarten:");
 check("manual = gespeicherte Reihenfolge", names(scan("manual")), ["Bravo", "Alpha", "Charlie", "Ordner", "notiz"]);
@@ -88,11 +98,22 @@ check("pinned nach saveItemState", raw.pinned, ["app:c.desktop"]);
 check("zukunft nach saveItemState", raw.zukunft, { feld: 1 });
 
 print("Verschieben nimmt die Nadel mit:");
-const r = L.itemActions.moveEntry(D, T, "c.desktop", "app:c.desktop");
+// Verschieben meldet asynchron - auf das Ergebnis warten.
+const wait = start => {
+    let result = null;
+    const loop = new GLib.MainLoop(null, false);
+    start(value => {
+        result = value;
+        loop.quit();
+    });
+    loop.run();
+    return result;
+};
+const r = wait(cb => L.itemActions.moveEntry(D, T, "c.desktop", "app:c.desktop", cb));
 GLib.file_set_contents(T + "/.avincelaunch.json", JSON.stringify({ version: 1, order: [], disabled: [] }));
-L.itemActions.undoMove(r.record);
+wait(cb => L.itemActions.undoMove(r.record, cb));
 check("nach Hin und Zurueck wieder angepinnt", L.sidecar.readSidecar(D).pinned, ["app:c.desktop"]);
-const r2 = L.itemActions.moveEntry(D, T, "c.desktop", "app:c.desktop");
+wait(cb => L.itemActions.moveEntry(D, T, "c.desktop", "app:c.desktop", cb));
 check("im Ziel angepinnt", L.sidecar.readSidecar(T).pinned, ["app:c.desktop"]);
 check("in der Quelle nicht mehr", L.sidecar.readSidecar(D).pinned, []);
 

@@ -166,6 +166,8 @@ const fence = {
     _cancelPortalScan: method("_cancelPortalScan", stopDeps),
     _stopPortalPoll: method("_stopPortalPoll", stopDeps),
     _cancelLinkScan: method("_cancelLinkScan", stopDeps),
+    _cancelLoadingHint: method("_cancelLoadingHint", stopDeps),
+    _cancelOrderScans: method("_cancelOrderScans", stopDeps),
     _stopLinkPoll: method("_stopLinkPoll", stopDeps),
     _stopFileMonitor: method("_stopFileMonitor", stopDeps),
     _cancelScheduledRefresh: method("_cancelScheduledRefresh", stopDeps),
@@ -177,13 +179,14 @@ const fence = {
             order.push("cinnamon destroy " + deleteConfig + ", Zeitgeber offen: "
                 + ["_scrollResetId", "_refreshIdleId", "_sizeSyncId", "_portalPollId", "_linkPollId", "_dialogListSyncId",
                    "_storageChangeTimeoutId", "_presetSettleId", "_applyingPositionId",
-                   "_configurePanelTimerId", "_titleSyncId"].filter(k => this[k]).length);
+                   "_configurePanelTimerId", "_titleSyncId", "_configureWaitId", "_loadingHintId"]
+                    .filter(k => this[k]).length);
         } } } }
     })
 };
 ["_scrollResetId", "_refreshIdleId", "_sizeSyncId", "_portalPollId", "_linkPollId", "_dialogListSyncId",
  "_storageChangeTimeoutId", "_presetSettleId", "_applyingPositionId", "_configurePanelTimerId",
- "_titleSyncId"].forEach(key => { fence[key] = timer(key); });
+ "_titleSyncId", "_configureWaitId", "_loadingHintId"].forEach(key => { fence[key] = timer(key); });
 fence._refreshPending = true;
 fence._scrollView = null;
 fence._fileMonitor = { stop() { order.push("monitor stop"); } };
@@ -201,6 +204,14 @@ fence._linkGate = new ScanGate(() => ({ cancel() { linkScanCancelled += 1; } }),
     { timeoutMs: 20, timeoutResult: () => "zeit" });
 fence._linkGate.request({ name: "netz laufend" });
 fence._linkGate.request({ name: "netz wartend" });
+// Async-Umbau: Dialogliste (eigenes Einlesen) und Abbrechen der Menue-Abfragen.
+let orderScanCancelled = 0;
+fence._orderGate = new ScanGate(() => ({ cancel() { orderScanCancelled += 1; } }),
+    (job, result) => gateResults.push(result),
+    { timeoutMs: 20, timeoutResult: () => "zeit" });
+fence._orderGate.request({ name: "liste laufend" });
+fence._orderJob = { name: "liste gesammelt" };
+fence._ioCancellable = new Gio.Cancellable();
 
 fence.destroy(true);
 check("Reihenfolge: Hintergrundarbeit vor Cinnamons destroy, kein Zeitgeber mehr offen",
@@ -209,6 +220,9 @@ check("Portal-Einlesen abgebrochen, nichts wartet", [scanCancelled, fence._porta
     [1, false, 0]);
 check("V4d: Netz-Einlesen abgebrochen, nichts wartet",
     [linkScanCancelled, fence._linkGate.busy, fence._linkGate.stalled], [1, false, 0]);
+check("Dialogliste: Einlesen abgebrochen, nichts gesammelt",
+    [orderScanCancelled, fence._orderGate.busy, fence._orderJob], [1, false, null]);
+check("Menue-Abfragen abgebrochen (Gio.Cancellable)", fence._ioCancellable.is_cancelled(), true);
 check("Ordnerueberwachung weg, Aktualisierung nicht mehr vorgemerkt",
     [fence._fileMonitor, fence._refreshPending], [null, false]);
 runLoop(120);
@@ -413,11 +427,26 @@ function backupCopies() {
 
 const steps = [];
 const timers = [];
+// Async-Umbau: Einrichten liest die Ordner erst asynchron (_withOrderScans);
+// hier antwortet das Lesen sofort, ausser answerScans ist false.
+let answerScans = true;
+let pendingScan = null;
 const dialogFence = {
     _rootPath: "/basis/BUERO",
     _getInstanceId: () => "4",
-    _keepDialogListInSubfolder: () => { steps.push("keep?"); return false; },
-    _syncDialogListIfClean: () => steps.push("sync"),
+    _isPortal: () => false,
+    _storedOrderListPath: () => "",
+    _getOrderDirectoryPath: () => "/basis/BUERO",
+    _withOrderScans(requests, callback) {
+        steps.push("lesen " + requests.map(r => r.path).join(","));
+        if (answerScans) {
+            callback({ gelesen: true });
+        } else {
+            pendingScan = callback;
+        }
+    },
+    _keepDialogListInSubfolder: results => { steps.push("keep? " + JSON.stringify(results)); return false; },
+    _syncDialogListWithScans: results => steps.push("sync " + JSON.stringify(results)),
     _reloadOrderSettingsFromPanel: () => steps.push("reload"),
     _configurePanelTimerId: 0
 };
@@ -452,18 +481,26 @@ dialogFence._spawnSettingsWindow = method("_spawnSettingsWindow", {
         return 1;
     } }
 });
+const dialogMainloop = {
+    source_remove: id => { timers.forEach(t => { if (t[2] === id) { t[3] = "entfernt"; } }); },
+    timeout_add: (ms, fn) => { const id = timers.length + 5; timers.push([ms, fn, id, "offen"]); return id; }
+};
 dialogFence.configureDesklet = method("configureDesklet", {
     Desklet: cinnamonDesklet,
-    Mainloop: {
-        source_remove: () => {},
-        timeout_add: (ms, fn) => { timers.push([ms, fn]); return 5; }
-    },
+    Mainloop: dialogMainloop,
+    GLib: GLib,
+    IO_WAIT_MS: 3000
+});
+dialogFence._openConfigureWindow = method("_openConfigureWindow", {
+    Mainloop: dialogMainloop,
     GLib: GLib
 });
 dialogFence.configureDesklet();
-check("Reihenfolge: zuerst sichern, dann Ordner zuruecksetzen, dann Dialog",
-    steps, ["sichern", "keep?", "schreibt order-folder-path=/basis/BUERO", "schreibt order-in-subfolder=false",
-        "sync", "reload", "dialog 0"]);
+check("Reihenfolge: zuerst sichern, dann Ordner lesen, dann zuruecksetzen, dann Dialog",
+    steps, ["sichern", "lesen /basis/BUERO", 'keep? {"gelesen":true}', "schreibt order-folder-path=/basis/BUERO",
+        "schreibt order-in-subfolder=false", 'sync {"gelesen":true}', "reload", "dialog 0"]);
+check("Wartezeit 3 s angelegt und nach dem Lesen entfernt", [timers[0][0], timers[0][3]], [3000, "entfernt"]);
+timers.shift();
 const copies = backupCopies();
 check("genau eine Kopie, Inhalt = <ID>.json",
     [copies.length, copies.length ? read(BACKUPS + "/" + copies[0]) : null],
@@ -482,6 +519,28 @@ check("geaendert: neue Kopie", backupCopies().length, 2);
 GLib.file_set_contents(SPICES + "/4.json", "");
 dialogFence.configureDesklet();
 check("leere <ID>.json (Cinnamon schreibt gerade neu) wird nicht gesichert", backupCopies().length, 2);
+
+// Ordner antwortet nicht: nach 3 s oeffnet der Dialog trotzdem (wie "nicht
+// lesbar"); ein zweiter Klick in der Wartezeit startet nichts Neues; ein
+// spaetes Ergebnis oeffnet kein zweites Fenster.
+answerScans = false;
+steps.length = 0;
+const before = timers.length;
+dialogFence.configureDesklet(1);
+dialogFence.configureDesklet(1);
+check("haengt: nur gelesen, noch kein Dialog; Doppelklick ignoriert",
+    steps.filter(x => x !== "sichern"), ["lesen /basis/BUERO"]);
+const wait = timers[before];
+check("haengt: Wartezeit 3 s", [timers.length - before, wait[0]], [1, 3000]);
+wait[1].call(dialogFence);
+check("nach 3 s: Dialog ohne Lesestand", steps.slice(steps.indexOf("lesen /basis/BUERO") + 1),
+    ["keep? {}", "schreibt order-folder-path=/basis/BUERO", "schreibt order-in-subfolder=false", "sync {}",
+        "reload", "dialog 1"]);
+const count = steps.length;
+pendingScan({ spaet: true });
+check("spaetes Ergebnis: kein zweites Fenster", steps.length, count);
+answerScans = true;
+spawned.pop();
 
 // N11: Startbefehl wie Cinnamon, Fehlerausgabe in den Cache.
 const LOG = work + "/cache/avincelaunch/einrichten-4.log";

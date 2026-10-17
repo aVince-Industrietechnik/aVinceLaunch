@@ -62,6 +62,30 @@ function exists(path) {
     return GLib.file_test(path, GLib.FileTest.EXISTS);
 }
 
+// Die Aktionen melden ihr Ergebnis asynchron (Rueckruf) - hier auf das
+// Ergebnis warten. Kaeme der Rueckruf sofort (synchron), zaehlt das als
+// Fehler: Cinnamon darf dabei nie warten.
+let syncCallbacks = 0;
+function run(start) {
+    let done = false;
+    let value;
+    const loop = new GLib.MainLoop(null, false);
+    let inside = true;
+    start(result => {
+        if (inside) {
+            syncCallbacks += 1;
+        }
+        done = true;
+        value = result;
+        loop.quit();
+    });
+    inside = false;
+    if (!done) {
+        loop.run();
+    }
+    return value;
+}
+
 const root = GLib.dir_make_tmp("avl-ap18-XXXXXX");
 const A_DIR = root + "/INTERNET";
 const B_DIR = root + "/BUERO";
@@ -82,7 +106,7 @@ S.writeSidecar(A_DIR, {
 S.writeSidecar(B_DIR, { order: ["app:calc.desktop"], disabled: [] });
 
 print("Verschieben:");
-let r = A.moveEntry(A_DIR, B_DIR, "firefox.desktop", "app:firefox.desktop");
+let r = run(cb => A.moveEntry(A_DIR, B_DIR, "firefox.desktop", "app:firefox.desktop", cb));
 check("gelingt", r.ok, true);
 check("Datei im Ziel", exists(B_DIR + "/firefox.desktop"), true);
 check("Datei nicht mehr in der Quelle", exists(A_DIR + "/firefox.desktop"), false);
@@ -93,7 +117,7 @@ check("Ziel: am Ende", S.readSidecar(B_DIR).order, ["app:calc.desktop", "app:fir
 check("Ziel: Zustand abgeschaltet mitgenommen", S.readSidecar(B_DIR).disabled, ["app:firefox.desktop"]);
 
 print("Rueckgaengig:");
-const undo = A.undoMove(r.record);
+const undo = run(cb => A.undoMove(r.record, cb));
 check("gelingt", undo.ok, true);
 check("Datei wieder in der Quelle", exists(A_DIR + "/firefox.desktop"), true);
 check("Quelle: alter Platz", S.readSidecar(A_DIR).order,
@@ -103,31 +127,62 @@ check("Ziel: wieder wie vorher", S.readSidecar(B_DIR).order, ["app:calc.desktop"
 check("Ziel: abgeschaltet leer", S.readSidecar(B_DIR).disabled, []);
 
 print("Gleicher Name im Ziel:");
-r = A.moveEntry(A_DIR, B_DIR, "chrome.desktop", "app:chrome.desktop");
+r = run(cb => A.moveEntry(A_DIR, B_DIR, "chrome.desktop", "app:chrome.desktop", cb));
 check("abgelehnt", r.reason, "exists");
 const [, inhalt] = GLib.file_get_contents(B_DIR + "/chrome.desktop");
 check("Ziel unveraendert", new TextDecoder().decode(inhalt), "andere Datei");
 check("Quelle unveraendert", exists(A_DIR + "/chrome.desktop"), true);
 
 print("Ordner mit Stil:");
-check("Eintraege gezaehlt", A.countEntries(A_DIR + "/Werkzeuge"), 2);
-r = A.moveEntry(A_DIR, B_DIR, "Werkzeuge", "folder:Werkzeuge");
+check("Eintraege gezaehlt", run(cb => A.countEntries(A_DIR + "/Werkzeuge", null, cb)), 2);
+r = run(cb => A.moveEntry(A_DIR, B_DIR, "Werkzeuge", "folder:Werkzeuge", cb));
 check("gelingt", r.ok, true);
 check("Inhalt mitgewandert", exists(B_DIR + "/Werkzeuge/b.desktop"), true);
 check("Stil im Ziel", S.readSidecar(B_DIR).itemStyles["folder:Werkzeuge"], { icon: "folder-red" });
 check("Stil in der Quelle weg", S.readSidecar(A_DIR).itemStyles["folder:Werkzeuge"], undefined);
 
 print("Sonderfaelle:");
-check("gleicher Ordner", A.moveEntry(A_DIR, A_DIR + "/", "firefox.desktop", "x").reason, "same");
-check("fehlt", A.moveEntry(A_DIR, B_DIR, "gibtsnicht.desktop", "x").reason, "missing");
+check("gleicher Ordner", run(cb => A.moveEntry(A_DIR, A_DIR + "/", "firefox.desktop", "x", cb)).reason, "same");
+check("fehlt", run(cb => A.moveEntry(A_DIR, B_DIR, "gibtsnicht.desktop", "x", cb)).reason, "missing");
+check("ohne Ordner", run(cb => A.moveEntry("", B_DIR, "firefox.desktop", "x", cb)).reason, "failed");
+// Verweis mit verlorenem Ziel im Zielordner zaehlt als vorhanden (wie bisher
+// ohne Verweisen zu folgen).
+Gio.File.new_for_path(B_DIR + "/firefox.desktop").make_symbolic_link("/gibt/es/nicht", null);
+r = run(cb => A.moveEntry(A_DIR, B_DIR, "firefox.desktop", "app:firefox.desktop", cb));
+check("defekter Verweis im Ziel: abgelehnt", r.reason, "exists");
+check("defekter Verweis im Ziel: Quelle bleibt", exists(A_DIR + "/firefox.desktop"), true);
+Gio.File.new_for_path(B_DIR + "/firefox.desktop").delete(null);
+check("Zaehlen: Ordner fehlt", run(cb => A.countEntries(A_DIR + "/gibtsnicht", null, cb)), -1);
+const stopped = new Gio.Cancellable();
+let lateCount = "kein Rueckruf";
+A.countEntries(A_DIR, stopped, count => {
+    lateCount = count;
+});
+stopped.cancel();
+const settle = new GLib.MainLoop(null, false);
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+    settle.quit();
+    return GLib.SOURCE_REMOVE;
+});
+settle.run();
+check("Zaehlen abgebrochen: kein Rueckruf", lateCount, "kein Rueckruf");
 
 print("Entfernen (Papierkorb):");
-r = A.trashEntry(A_DIR, "thunderbird.desktop", "app:thunderbird.desktop");
+r = run(cb => A.trashEntry(A_DIR, "thunderbird.desktop", "app:thunderbird.desktop", cb));
 check("gelingt", r.ok, true);
 check("Datei weg", exists(A_DIR + "/thunderbird.desktop"), false);
 check("aus der Reihenfolge", S.readSidecar(A_DIR).order, ["app:firefox.desktop", "app:chrome.desktop"]);
 
 check("im Wegwerf-Papierkorb", exists(work + "/Trash/files/thunderbird.desktop"), true);
+check("Papierkorb: fehlt", run(cb => A.trashEntry(A_DIR, "gibtsnicht.desktop", "x", cb)).reason, "missing");
+
+print("Asynchron:");
+check("kein Rueckruf kam sofort (synchron)", syncCallbacks, 0);
+const source = GLib.file_get_contents(GLib.get_current_dir() + "/Desklet/lib/itemActions.js")[1];
+const text = new TextDecoder().decode(source);
+check("keine synchronen Dateizugriffe mehr",
+    ["query_info(", "enumerate_children(", "query_exists", "file_test", "file_get_contents",
+        ".move(", ".trash(", "next_file("].filter(pattern => text.indexOf(pattern) !== -1), []);
 
 // Aufraeumen: Testordner und Wegwerf-Papierkorb loeschen.
 GLib.spawn_command_line_sync("rm -rf " + GLib.shell_quote(root) + " " + GLib.shell_quote(shim)

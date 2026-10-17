@@ -6,7 +6,7 @@
 // nicht (das Feld "Comment" heisst dort description); der Fehler wurde still
 // abgefangen, die Beschreibung blieb immer leer (W6, 3c.7). Geprueft an
 // echten .desktop-Dateien in einem Wegwerfordner: parseDesktopEntry,
-// scanDirectory und das asynchrone Einlesen (Netz-Modus) liefern die
+// scanDirectoryAsync und das Portal-Einlesen liefern die
 // Beschreibung; ohne "Comment=" bleibt sie leer; der Tooltip-Text aus
 // desklet.js setzt sie unter den Namen.
 // Aufruf im Repository-Wurzelverzeichnis:  cjs tests/v5f-test.js
@@ -49,25 +49,32 @@ const withComment = write("avl-editor.desktop",
 const without = write("avl-ohne.desktop",
     "[Desktop Entry]\nType=Application\nName=AVL Ohne\nExec=true\n");
 
+// Asynchrones Einlesen abwarten (hoechstens 5 s).
+function wait(start) {
+    let result = null;
+    const loop = new GLib.MainLoop(null, false);
+    start(r => { result = r; loop.quit(); });
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5000, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
+    loop.run();
+    return result;
+}
+const bytesOf = path => GLib.file_get_contents(path)[1];
+
 print("N28 Beschreibung aus der .desktop-Datei:");
 check("parseDesktopEntry: Comment= wird Beschreibung",
-    L.linkScanner.parseDesktopEntry(withComment).comment, "Edit text files");
+    L.linkScanner.parseDesktopEntry(withComment, null, bytesOf(withComment)).comment, "Edit text files");
 check("parseDesktopEntry: ohne Comment= leer",
-    L.linkScanner.parseDesktopEntry(without).comment, "");
+    L.linkScanner.parseDesktopEntry(without, null, bytesOf(without)).comment, "");
 
-const scanned = L.linkScanner.scanDirectory(work, { sortMode: "name-asc" });
+const scanned = wait(cb => L.linkScanner.scanDirectoryAsync(work, { sortMode: "name-asc" }, cb)) || {};
 const byName = {};
 (scanned.items || []).forEach(i => { byName[i.name] = i.comment; });
-check("scanDirectory: Beschreibungen", byName, { "AVL Editor": "Edit text files", "AVL Ohne": "" });
+check("scanDirectoryAsync: Beschreibungen", byName, { "AVL Editor": "Edit text files", "AVL Ohne": "" });
 
-let asyncResult = null;
-const loop = new GLib.MainLoop(null, false);
-L.portalScanner.scanLinkDirectoryAsync(work, { sortMode: "name-asc" }, r => { asyncResult = r; loop.quit(); });
-GLib.timeout_add(GLib.PRIORITY_DEFAULT, 5000, () => { loop.quit(); return GLib.SOURCE_REMOVE; });
-loop.run();
+const asyncResult = wait(cb => L.portalScanner.scanPortalAsync(work, { sortMode: "name-asc" }, cb));
 const asyncByName = {};
 ((asyncResult || {}).items || []).forEach(i => { asyncByName[i.name] = i.comment; });
-check("asynchron (Netz-Modus): Beschreibungen gleich", asyncByName, byName);
+check("Portal (asynchron): Beschreibungen gleich", asyncByName, byName);
 
 const scannerSource = new TextDecoder().decode(GLib.file_get_contents("Desklet/lib/linkScanner.js")[1]);
 check("kein get_comment() mehr", /get_comment\s*\(/.test(scannerSource), false);

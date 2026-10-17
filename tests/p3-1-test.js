@@ -63,28 +63,39 @@ check("gleicher Ordner, neuer Eintrag -> sync",
 print("desklet.js:");
 const [, bytes] = GLib.file_get_contents("Desklet/desklet.js");
 const source = new TextDecoder().decode(bytes);
-const start = source.indexOf("\n    _syncDialogListIfClean: function(");
-const body = start < 0 ? "" : source.substring(start, source.indexOf("\n    },", start));
-check("_syncDialogListIfClean nutzt planDialogListSync mit gespeichertem Ordner",
-    /planDialogListSync\(\s*this\._storedOrderListPath\(\),\s*orderPath,\s*this\._dialogListClassifier\(\)\)/.test(body), true);
+// Async-Umbau: _syncDialogListIfClean liest die Ordner nur noch asynchron;
+// der Abgleich selbst steht in _syncDialogListWithScans, die Logik dort ist
+// dieselbe wie vorher (mit den schon gelesenen Ordnern).
+const bodyOf = name => {
+    const at = source.indexOf("\n    " + name + ": function(");
+    return at < 0 ? "" : source.substring(at, source.indexOf("\n    },", at));
+};
+const body = bodyOf("_syncDialogListWithScans");
+check("_syncDialogListWithScans nutzt planDialogListSync mit gespeichertem Ordner",
+    /planDialogListSync\(\s*this\._storedOrderListPath\(\),\s*orderPath,\s*this\._dialogListClassifier\(results\)\)/.test(body), true);
 check("kein eigener Vergleich mehr in desklet.js", body.indexOf("commonFresh") < 0, true);
-const cfgStart = source.indexOf("\n    configureDesklet: function(");
-const cfg = source.substring(cfgStart, source.indexOf("\n    },", cfgStart));
+check("_syncDialogListIfClean liest beide Ordner und gleicht dann ab",
+    /_withOrderScans\(\[\{ path: this\._storedOrderListPath\(\) \}, \{ path: orderPath \}\],\s*results => this\._syncDialogListWithScans\(results\)\)/
+        .test(bodyOf("_syncDialogListIfClean")), true);
 // Am Geraet gefunden (09.10.): Die Zuweisung an order_folder_path schreibt die
 // Einstellung sofort (bindProperty beachtet die Richtung nicht) - die
-// Entscheidung muss davor fallen.
-const keepAt = cfg.indexOf("this._keepDialogListInSubfolder()");
+// Entscheidung muss davor fallen. Seit dem Async-Umbau in
+// _openConfigureWindow (nach dem Lesen der Ordner).
+const cfg = bodyOf("_openConfigureWindow");
+const keepAt = cfg.indexOf("this._keepDialogListInSubfolder(results)");
 const resetAt = cfg.indexOf("this.order_folder_path = this._rootPath");
-check("configureDesklet: Unterordner-Entscheidung VOR dem Zuruecksetzen",
+check("Einrichten: Unterordner-Entscheidung VOR dem Zuruecksetzen",
     keepAt >= 0 && resetAt > keepAt
-    && /if \(this\._rootPath && !this\._keepDialogListInSubfolder\(\)\) \{\s*this\.order_folder_path = this\._rootPath;/.test(cfg), true);
-const keepStart = source.indexOf("\n    _keepDialogListInSubfolder: function(");
-const keepBody = keepStart < 0 ? "" : source.substring(keepStart, source.indexOf("\n    },", keepStart));
+    && /if \(this\._rootPath && !this\._keepDialogListInSubfolder\(results\)\) \{\s*this\.order_folder_path = this\._rootPath;/.test(cfg), true);
+check("configureDesklet liest vorher Startordner, Ordner der Liste und Dialogordner",
+    /_withOrderScans\(\[this\._rootPath, this\._storedOrderListPath\(\), this\._getOrderDirectoryPath\(\)\]/
+        .test(bodyOf("configureDesklet")), true);
+const keepBody = bodyOf("_keepDialogListInSubfolder");
 check("_keepDialogListInSubfolder: nur bei \"stale\" im eigenen Ordner",
-    /planDialogListSync\(\s*listPath,\s*this\._rootPath,\s*this\._dialogListClassifier\(\)\)\s*===\s*"stale"/.test(keepBody), true);
-check("configureDesklet: erst Abgleich, dann gespeicherten Ordner laden",
-    cfg.indexOf("this._syncDialogListIfClean()") >= 0
-    && cfg.indexOf("this._syncDialogListIfClean()") < cfg.indexOf("this._reloadOrderSettingsFromPanel()"), true);
+    /planDialogListSync\(\s*listPath,\s*this\._rootPath,\s*this\._dialogListClassifier\(results\)\)\s*===\s*"stale"/.test(keepBody), true);
+check("Einrichten: erst Abgleich, dann gespeicherten Ordner laden",
+    cfg.indexOf("this._syncDialogListWithScans(results)") >= 0
+    && cfg.indexOf("this._syncDialogListWithScans(results)") < cfg.indexOf("this._reloadOrderSettingsFromPanel()"), true);
 
 print("\nGeprueft: " + checks + ", Fehler: " + failures);
 if (failures > 0) {
